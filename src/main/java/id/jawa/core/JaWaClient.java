@@ -11,8 +11,12 @@ import id.jawa.noise.NoiseTransport;
 import id.jawa.pair.ClientPayloadBuilder;
 import id.jawa.pair.PairingHandler;
 import id.jawa.proto.Wa;
+import id.jawa.signal.InMemorySignalKeyStore;
+import id.jawa.signal.PreKeyManager;
+import id.jawa.signal.SignalKeyStore;
 import id.jawa.store.AuthCreds;
 import id.jawa.store.AuthStore;
+import id.jawa.util.Bytes;
 import id.jawa.util.crypto.Curve25519;
 import id.jawa.util.crypto.KeyPair25519;
 import org.slf4j.Logger;
@@ -53,6 +57,7 @@ public final class JaWaClient implements AutoCloseable {
     }
 
     private final AuthStore store;
+    private final SignalKeyStore signalStore = new InMemorySignalKeyStore();
     private Listener listener = new Listener() {};
     private FrameSocket frame;
     private NoiseHandshake noise;
@@ -60,6 +65,7 @@ public final class JaWaClient implements AutoCloseable {
     private AuthCreds creds;
     private Thread readerThread;
     private final AtomicBoolean closing = new AtomicBoolean(false);
+    private static final int PRE_KEY_UPLOAD_COUNT = 30;
 
     public JaWaClient(AuthStore store) { this.store = store; }
 
@@ -159,6 +165,34 @@ public final class JaWaClient implements AutoCloseable {
         }
     }
 
+    private final java.util.Map<String, Runnable> pendingIqResults = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** Random 16-char hex id for outgoing IQ stanzas. */
+    private String newIqId() {
+        return Bytes.toHex(Bytes.random(8));
+    }
+
+    /** Upload {@code PRE_KEY_UPLOAD_COUNT} one-time pre-keys to the server. */
+    private void uploadPreKeys() {
+        var preKeys = PreKeyManager.generate(creds, signalStore, PRE_KEY_UPLOAD_COUNT);
+        if (preKeys.isEmpty()) {
+            LOG.debug("No new pre-keys to upload");
+            return;
+        }
+        String iqId = newIqId();
+        BinaryNode iq = PreKeyManager.buildUploadStanza(iqId, creds, preKeys);
+        pendingIqResults.put(iqId, () -> {
+            PreKeyManager.markUploaded(creds, preKeys);
+            try { store.save(creds); } catch (Exception e) { LOG.warn("Failed to save creds after pre-key upload", e); }
+            LOG.info("Uploaded {} pre-keys (ids {}..{})",
+                preKeys.size(),
+                preKeys.keySet().iterator().next(),
+                preKeys.keySet().stream().reduce((a, b) -> b).get());
+        });
+        send(iq);
+        LOG.debug("Sent pre-key upload IQ id={} ({} keys)", iqId, preKeys.size());
+    }
+
     private boolean handleStanza(BinaryNode node, PairingHandler pair) throws Exception {
         if ("stream:error".equals(node.tag())) {
             String code = node.attr("code");
@@ -174,7 +208,31 @@ public final class JaWaClient implements AutoCloseable {
             LOG.debug("Server sent stream end");
             return true;
         }
+        if ("success".equals(node.tag())) {
+            LOG.info("Login successful — meJid={} lid={} platform={}",
+                node.attr("jid", creds.meJid),
+                node.attr("lid", creds.meLid),
+                node.attr("platform", creds.platform));
+            listener.onConnected();
+            uploadPreKeys();
+            return true;
+        }
         if (!"iq".equals(node.tag())) return false;
+
+        // Result for an IQ we sent — fire the pending callback if any.
+        if ("result".equals(node.attr("type"))) {
+            String id = node.attr("id");
+            Runnable cb = id == null ? null : pendingIqResults.remove(id);
+            if (cb != null) { cb.run(); return true; }
+        }
+        // Error for an IQ we sent — clean up + log.
+        if ("error".equals(node.attr("type"))) {
+            String id = node.attr("id");
+            if (id != null && pendingIqResults.remove(id) != null) {
+                LOG.warn("IQ error response for id={}: {}", id, node);
+                return true;
+            }
+        }
 
         BinaryNode pairDevice  = node.child("pair-device");
         BinaryNode pairSuccess = node.child("pair-success");
