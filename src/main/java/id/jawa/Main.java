@@ -71,6 +71,12 @@ public final class Main {
                     System.out.println(">>> Installed " + addresses.size() + " Signal session(s):");
                     for (var a : addresses) System.out.println("    " + a);
                 });
+                // Send a text — to-self echo by default, override with -Djawa.text=...
+                String text = System.getProperty("jawa.text", "Hello from JaWa " + java.time.LocalTime.now());
+                client.sendText(userOnly, text).whenComplete((msgId, err) -> {
+                    if (err != null) { System.err.println(">>> send failed: " + err); err.printStackTrace(); return; }
+                    System.out.println(">>> Sent message id=" + msgId + " body=\"" + text + "\"");
+                });
             }
             @Override public void onStanza(id.jawa.binary.BinaryNode node) {
                 System.out.println("RX: " + node.tag() + " " + node.attrs());

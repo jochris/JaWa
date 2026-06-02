@@ -11,6 +11,8 @@ import id.jawa.noise.NoiseTransport;
 import id.jawa.pair.ClientPayloadBuilder;
 import id.jawa.pair.PairingHandler;
 import id.jawa.proto.Wa;
+import id.jawa.message.MessageEncoder;
+import id.jawa.message.MessageSender;
 import id.jawa.signal.InMemorySignalKeyStore;
 import id.jawa.signal.JaWaProtocolStore;
 import id.jawa.signal.PreKeyBundleFetcher;
@@ -195,6 +197,34 @@ public final class JaWaClient implements AutoCloseable {
         var f = new java.util.concurrent.CompletableFuture<BinaryNode>();
         sendIq(iq, f::complete);
         return f;
+    }
+
+    /**
+     * Send a text message to {@code toUser} (bare JID, e.g. {@code 628xxx@s.whatsapp.net}).
+     * Returns the message id once the stanza has been transmitted.
+     *
+     * <p>Pipeline: query devices → bootstrap any missing sessions → encrypt per-device → send.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendText(String toUser, String text) {
+        return bootstrapSessions(toUser).thenApply(addresses -> {
+            String msgId = newIqId().toUpperCase();
+            id.jawa.util.Jid base = id.jawa.util.Jid.parse(toUser);
+            String user = base.user();
+            String server = base.server();
+            // Build the same per-device JID list bootstrap used
+            java.util.List<String> deviceJids = new java.util.ArrayList<>();
+            for (var a : addresses) {
+                deviceJids.add(new id.jawa.util.Jid(a.getName(), server, a.getDeviceId(), 0,
+                    server.equals(id.jawa.util.Jid.SERVER_LID) ? id.jawa.util.Jid.DOMAIN_LID
+                        : id.jawa.util.Jid.DOMAIN_WHATSAPP).asString());
+            }
+            id.jawa.proto.Wa.Message msg = MessageEncoder.text(text);
+            MessageSender.Result result = MessageSender.buildStanza(
+                protocolStore, creds, msgId, toUser, deviceJids, msg);
+            send(result.stanza());
+            LOG.info("Sent message id={} to={} ({} device(s))", msgId, toUser, deviceJids.size());
+            return msgId;
+        });
     }
 
     /** Fetch pre-key bundles for the given per-device JIDs and install Signal sessions for each. */
