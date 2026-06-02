@@ -51,11 +51,26 @@ Runs the full test suite (29 tests across binary codec and crypto primitives).
 
 ## Try it — pair with WhatsApp
 
+Two flows are supported on first run:
+
+### Option A — phone-number pairing code (recommended)
+
+```
+./gradlew run -PsessionFile=sessions/myphone.session -Djawa.phone=628xxxxxxxxx --console=plain
+```
+
+JaWa prints an 8-character Crockford code formatted as `XXXX-XXXX`. On your phone:
+**WhatsApp → Settings → Linked Devices → Link with phone number** → enter the code.
+JaWa receives the server-forwarded primary device key, derives the ADV shared secret,
+finalises the pair, and persists the session file.
+
+### Option B — QR code
+
 ```
 ./gradlew run -PsessionFile=sessions/myphone.session --console=plain
 ```
 
-On the first run (no session file yet), JaWa:
+Omit `-Djawa.phone` to fall back to the QR flow. JaWa:
 
 1. Generates fresh Noise + identity keypairs and a registration id.
 2. Connects to `wss://web.whatsapp.com/ws/chat`.
@@ -92,8 +107,14 @@ Point your WhatsApp app at the QR (Settings → Linked Devices → Link a Device
 - [x] **M1** — Binary Node codec (encode/decode, 4 JID variants, packed nibble/hex, token dictionary) — 19 unit tests
 - [x] **M2** — Noise XX handshake + WebSocket transport, server CertChain validation
 - [x] **M3** — ClientPayload (register + login)
-- [x] **M4** — QR pairing (live-verified: server accepts the register payload and returns pair-device refs)
-- [ ] **M5** — Send + receive text 1-on-1 (Signal session bootstrap, USync device fanout, `<enc type=pkmsg/msg>`)
+- [x] **M4** — QR pairing (live-verified end-to-end: scan → ADV chain verify → creds persist → login)
+- [x] **M4.5** — Phone-number pairing code (PBKDF2 + AES-CTR wrap, X25519 × 2 + HKDF advSecret derivation)
+- [~] **M5** — Send + receive text 1-on-1
+  - [x] Pre-key upload (`<iq xmlns=encrypt>`)
+  - [x] USync device list query
+  - [x] Signal session bootstrap (libsignal X3DH)
+  - [x] Encrypt + send `<message>` (code complete; live verify pending re-pair)
+  - [ ] Receive + decrypt incoming `<enc>`
 - [ ] **M6** — Receipts, retries, ack flow
 - [ ] **M7** — Group messaging (Sender Keys distribution + skmsg)
 - [ ] **M8** — Media upload/download (HKDF-AES-CBC + HMAC, mediaConn)

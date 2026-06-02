@@ -31,7 +31,24 @@ public final class Main {
         JaWaClient client = new JaWaClient(store);
 
         client.listener(new JaWaClient.Listener() {
+            @Override public void onPaired(String jid, String pushName, String platform) {
+                System.out.println(">>> PAIRED jid=" + jid + " biz=" + pushName + " platform=" + platform);
+                System.out.println(">>> Creds persisted to " + sessionFile.toAbsolutePath());
+            }
             @Override public void onQr(java.util.List<String> qrs) {
+                String phone = System.getProperty("jawa.phone");
+                if (phone != null && !phone.isBlank()) {
+                    // Switch to pair-code instead of QR
+                    client.requestPairingCode(phone, null).whenComplete((code, err) -> {
+                        if (err != null) { System.err.println(">>> pair-code request failed: " + err); return; }
+                        System.out.println();
+                        System.out.println(">>> Pair code: " + code.substring(0, 4) + "-" + code.substring(4));
+                        System.out.println(">>> Open WhatsApp → Settings → Linked Devices → Link with phone number → enter this code");
+                        System.out.println();
+                    });
+                    return;
+                }
+                // No phone supplied — fall through to QR rendering
                 if (qrs.isEmpty()) return;
                 System.out.println();
                 System.out.println(">>> Open WhatsApp → Settings → Linked Devices → Link a Device, then scan:");
@@ -41,10 +58,7 @@ public final class Main {
                 System.out.println(">>> ref 1/" + qrs.size() + " — refs rotate every ~30 s; scan within window");
                 System.out.println();
             }
-            @Override public void onPaired(String jid, String pushName, String platform) {
-                System.out.println(">>> PAIRED jid=" + jid + " biz=" + pushName + " platform=" + platform);
-                System.out.println(">>> Creds persisted to " + sessionFile.toAbsolutePath());
-            }
+
             @Override public void onConnected() {
                 System.out.println(">>> Connected");
                 // Demo: query devices for me-jid (or another jid via -Djawa.target=...)

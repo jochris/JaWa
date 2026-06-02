@@ -9,6 +9,7 @@ import id.jawa.noise.FrameSocket;
 import id.jawa.noise.NoiseHandshake;
 import id.jawa.noise.NoiseTransport;
 import id.jawa.pair.ClientPayloadBuilder;
+import id.jawa.pair.PairingCodeHandler;
 import id.jawa.pair.PairingHandler;
 import id.jawa.proto.Wa;
 import id.jawa.message.MessageEncoder;
@@ -64,6 +65,7 @@ public final class JaWaClient implements AutoCloseable {
     private final AuthStore store;
     private final SignalKeyStore signalStore = new InMemorySignalKeyStore();
     private JaWaProtocolStore protocolStore;  // initialised in connect() once creds are loaded
+    private PairingCodeHandler pairCodeHandler; // populated on demand for pair-code flow
     private Listener listener = new Listener() {};
     private FrameSocket frame;
     private NoiseHandshake noise;
@@ -200,6 +202,29 @@ public final class JaWaClient implements AutoCloseable {
     }
 
     /**
+     * Switch the current pairing session to phone-number pairing-code mode.
+     *
+     * @param phoneNumber  the phone number to pair, in international E.164 form without {@code +} (e.g. "628123…")
+     * @param customCode   optional fixed 8-char Crockford code; {@code null} = randomly generated
+     * @return future completing with the 8-char code that should be displayed to the user
+     */
+    public java.util.concurrent.CompletableFuture<String> requestPairingCode(String phoneNumber, String customCode) {
+        if (creds.account != null) {
+            throw new IllegalStateException("already paired (creds.account is set) — cannot request a pairing code");
+        }
+        pairCodeHandler = new PairingCodeHandler(creds);
+        String iqId = newIqId();
+        BinaryNode iq = pairCodeHandler.buildCompanionHello(iqId, phoneNumber, customCode);
+        try { store.save(creds); } catch (Exception e) { LOG.warn("save creds failed", e); }
+        return sendIqAsync(iq).thenApply(resp -> {
+            if ("error".equals(resp.attr("type"))) {
+                throw new IllegalStateException("companion_hello rejected: " + resp);
+            }
+            return pairCodeHandler.pairingCode();
+        });
+    }
+
+    /**
      * Send a text message to {@code toUser} (bare JID, e.g. {@code 628xxx@s.whatsapp.net}).
      * Returns the message id once the stanza has been transmitted.
      *
@@ -330,6 +355,20 @@ public final class JaWaClient implements AutoCloseable {
             uploadPreKeys();
             return true;
         }
+        // Pair-code: primary device echoed back its ephemeral via a server-pushed notification
+        if ("notification".equals(node.tag())
+                && node.child("link_code_companion_reg") != null
+                && pairCodeHandler != null) {
+            try {
+                BinaryNode finish = pairCodeHandler.buildCompanionFinish(newIqId(), node);
+                send(finish);
+                LOG.debug("Sent companion_finish IQ");
+            } catch (Throwable t) {
+                LOG.warn("Failed to handle link_code notification", t);
+            }
+            return true;
+        }
+
         if (!"iq".equals(node.tag())) return false;
 
         // Result / error for an IQ we sent — fire the pending callback if any.
