@@ -74,6 +74,10 @@ public final class JaWaClient implements AutoCloseable {
     private AuthCreds creds;
     private Thread readerThread;
     private final AtomicBoolean closing = new AtomicBoolean(false);
+    /** Set by the pair-success handler so the reader exits cleanly into a login-mode reconnect. */
+    private final AtomicBoolean reconnectAfterPair = new AtomicBoolean(false);
+    /** Counts down exactly once when {@link #close()} fires; lets {@link #join()} block across reconnects. */
+    private final java.util.concurrent.CountDownLatch closeLatch = new java.util.concurrent.CountDownLatch(1);
     private static final int PRE_KEY_UPLOAD_COUNT = 30;
 
     public JaWaClient(AuthStore store) { this.store = store; }
@@ -183,9 +187,13 @@ public final class JaWaClient implements AutoCloseable {
         keepalive.schedule(tick, 20, java.util.concurrent.TimeUnit.SECONDS);
     }
 
-    /** Block the caller until the reader thread terminates (e.g. logout, disconnect). */
+    /**
+     * Block until {@link #close()} fires. Survives reconnects — the underlying reader
+     * thread may be swapped out mid-flight (e.g. post-pair auto-login) without unblocking
+     * the caller.
+     */
     public void join() throws InterruptedException {
-        if (readerThread != null) readerThread.join();
+        closeLatch.await();
     }
 
     private void readLoop() {
@@ -209,8 +217,38 @@ public final class JaWaClient implements AutoCloseable {
                 }
             }
         } catch (Throwable t) {
-            if (!closing.get()) listener.onError(t);
+            if (!closing.get() && !reconnectAfterPair.get()) listener.onError(t);
         } finally {
+            if (reconnectAfterPair.compareAndSet(true, false)) {
+                Thread.ofVirtual().name("jawa-reconnect").start(this::doReconnectPostPair);
+            } else {
+                close();
+            }
+        }
+    }
+
+    /**
+     * Tear down the current pairing connection and reopen as login mode. Called from a
+     * fresh virtual thread after pair-success — the server immediately follows pair-success
+     * with {@code stream:error 515} and a TCP close, and revokes the new creds within ~30s
+     * if we don't reconnect with a {@code LoginPayload}.
+     */
+    private void doReconnectPostPair() {
+        if (frame != null) { try { frame.close(); } catch (Throwable ignored) {} frame = null; }
+        if (keepalive != null) { keepalive.shutdownNow(); keepalive = null; }
+        noise = null;
+        transport = null;
+        pendingIqResults.clear();
+        // Brief settle so we don't race the server's own teardown of the pairing connection.
+        try { Thread.sleep(500); }
+        catch (InterruptedException ie) { Thread.currentThread().interrupt(); return; }
+        if (closing.get()) return; // caller invoked close() during the settle window
+        try {
+            connect();
+            LOG.info("Auto-reconnected post-pair → login mode");
+        } catch (Exception e) {
+            LOG.error("Auto-reconnect failed", e);
+            listener.onError(e);
             close();
         }
     }
@@ -435,6 +473,9 @@ public final class JaWaClient implements AutoCloseable {
             send(reply);
             store.save(creds);
             listener.onPaired(creds.meJid, creds.pushName, creds.platform);
+            // Server is about to send stream:error 515 and close the socket. Schedule a
+            // login-mode reconnect so we land in steady state before the new creds expire.
+            reconnectAfterPair.set(true);
             return true;
         }
         // Auto-reply to keepalive pings so the connection stays up
@@ -467,6 +508,7 @@ public final class JaWaClient implements AutoCloseable {
         if (!closing.compareAndSet(false, true)) return;
         if (keepalive != null) { keepalive.shutdownNow(); keepalive = null; }
         if (frame != null) frame.close();
+        closeLatch.countDown();
     }
 
     public AuthCreds creds() { return creds; }

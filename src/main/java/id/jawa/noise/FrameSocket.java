@@ -27,6 +27,10 @@ public final class FrameSocket implements AutoCloseable {
 
     private static final Logger LOG = LoggerFactory.getLogger(FrameSocket.class);
 
+    /** Identity sentinel pushed on disconnect so that {@link #receive} wakes immediately
+     *  instead of waiting out its timeout. Distinct from any legitimate empty frame. */
+    private static final byte[] CLOSED_SENTINEL = new byte[0];
+
     private final BlockingQueue<byte[]> incoming = new LinkedBlockingQueue<>();
     private final AtomicBoolean introSent = new AtomicBoolean(false);
     private final AtomicBoolean closed = new AtomicBoolean(false);
@@ -74,6 +78,7 @@ public final class FrameSocket implements AutoCloseable {
     /** Block for the next complete frame payload (no length prefix). */
     public byte[] receive(long timeoutMs) throws InterruptedException {
         byte[] f = incoming.poll(timeoutMs, TimeUnit.MILLISECONDS);
+        if (f == CLOSED_SENTINEL) throw new IllegalStateException("socket closed");
         if (f == null && closed.get()) throw new IllegalStateException("socket closed");
         return f;
     }
@@ -117,8 +122,10 @@ public final class FrameSocket implements AutoCloseable {
                                    WebSocketFrame clientCloseFrame, boolean closedByServer) {
             LOG.debug("WS disconnected (closedByServer={})", closedByServer);
             closed.set(true);
-            // wake any blocking receive with a sentinel — null is reserved for timeout, so push empty.
-            // Actually: just rely on isOpen()/closed flag; receive callers should also check.
+            // Wake any in-flight receive() immediately. Without this, a blocked poll waits
+            // out its full timeout (default 60s in the reader), which post-pair lets the
+            // server revoke our just-issued creds before we reconnect.
+            incoming.offer(CLOSED_SENTINEL);
         }
     }
 
