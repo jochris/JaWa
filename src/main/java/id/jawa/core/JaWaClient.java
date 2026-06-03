@@ -307,28 +307,56 @@ public final class JaWaClient implements AutoCloseable {
      * Send a text message to {@code toUser} (bare JID, e.g. {@code 628xxx@s.whatsapp.net}).
      * Returns the message id once the stanza has been transmitted.
      *
-     * <p>Pipeline: query devices → bootstrap any missing sessions → encrypt per-device → send.
+     * <p>Pipeline: query devices for recipient AND own user → bootstrap sessions for both
+     * sets → encrypt per-device (DSM-wrap for own companions, bare for foreign) → send.
+     *
+     * <p>The own-user USync is what lets the user's other devices (notably the phone)
+     * insert the outgoing message into their local chat history. Without it, the message
+     * reaches the recipient but the sender's own phone shows no record of it.
      */
     public java.util.concurrent.CompletableFuture<String> sendText(String toUser, String text) {
-        return bootstrapSessions(toUser).thenApply(addresses -> {
-            String msgId = newIqId().toUpperCase();
-            id.jawa.util.Jid base = id.jawa.util.Jid.parse(toUser);
-            String user = base.user();
-            String server = base.server();
-            // Build the same per-device JID list bootstrap used
-            java.util.List<String> deviceJids = new java.util.ArrayList<>();
-            for (var a : addresses) {
-                deviceJids.add(new id.jawa.util.Jid(a.getName(), server, a.getDeviceId(), 0,
-                    server.equals(id.jawa.util.Jid.SERVER_LID) ? id.jawa.util.Jid.DOMAIN_LID
-                        : id.jawa.util.Jid.DOMAIN_WHATSAPP).asString());
+        id.jawa.util.Jid myJid = id.jawa.util.Jid.parse(creds.meJid);
+        if (myJid == null) {
+            return java.util.concurrent.CompletableFuture.failedFuture(
+                new IllegalStateException("creds.meJid invalid"));
+        }
+        String ownBareJid = myJid.user() + "@" + id.jawa.util.Jid.SERVER_WHATSAPP;
+        boolean isSelfSend = toUser.equals(ownBareJid);
+        java.util.List<String> queryTargets = isSelfSend
+            ? java.util.List.of(toUser)
+            : java.util.List.of(toUser, ownBareJid);
+
+        return queryDevices(queryTargets).thenCompose(devicesMap -> {
+            java.util.List<String> allDeviceJids = new java.util.ArrayList<>();
+            for (var entry : devicesMap.entrySet()) {
+                id.jawa.util.Jid base = id.jawa.util.Jid.parse(entry.getKey());
+                if (base == null) continue;
+                for (var d : entry.getValue()) {
+                    allDeviceJids.add(d.asJid(base.user(), base.server()).asString());
+                }
             }
-            id.jawa.proto.Wa.Message msg = MessageEncoder.text(text);
-            MessageSender.Result result = MessageSender.buildStanza(
-                protocolStore, creds, msgId, toUser, deviceJids, msg);
-            send(result.stanza());
-            LOG.info("Sent message id={} to={} ({} device(s))", msgId, toUser, deviceJids.size());
-            return msgId;
+            return fetchBundlesAndInstallSessions(allDeviceJids).thenApply(addresses -> {
+                String msgId = newIqId().toUpperCase();
+                id.jawa.proto.Wa.Message msg = MessageEncoder.text(text);
+                MessageSender.Result result = MessageSender.buildStanza(
+                    protocolStore, creds, msgId, toUser, allDeviceJids, msg);
+                send(result.stanza());
+                int ownCount = countOwnDevices(allDeviceJids, myJid.user());
+                LOG.info("Sent message id={} to={} ({} device(s) total, {} own-companion DSM)",
+                    msgId, toUser, allDeviceJids.size(),
+                    Math.max(0, ownCount - 1)); // -1 for the sender device, which is skipped
+                return msgId;
+            });
         });
+    }
+
+    private static int countOwnDevices(java.util.List<String> deviceJids, String ownUser) {
+        int n = 0;
+        for (String dj : deviceJids) {
+            id.jawa.util.Jid j = id.jawa.util.Jid.parse(dj);
+            if (j != null && ownUser.equals(j.user())) n++;
+        }
+        return n;
     }
 
     /** Fetch pre-key bundles for the given per-device JIDs and install Signal sessions for each. */
