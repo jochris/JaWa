@@ -453,6 +453,22 @@ public final class JaWaClient implements AutoCloseable {
             LOG.debug("No new pre-keys to upload");
             return;
         }
+        // Mirror each pre-key into the libsignal protocolStore so inbound <enc type=pkmsg>
+        // can resolve the one-time pre-key id the server handed out. signalStore is the
+        // raw KeyPair25519 home; protocolStore is what SessionCipher.decrypt actually reads.
+        for (var entry : preKeys.entrySet()) {
+            try {
+                byte[] prefixedPub = Curve25519.prependType(entry.getValue().publicKey());
+                org.whispersystems.libsignal.ecc.ECKeyPair kp =
+                    new org.whispersystems.libsignal.ecc.ECKeyPair(
+                        org.whispersystems.libsignal.ecc.Curve.decodePoint(prefixedPub, 0),
+                        org.whispersystems.libsignal.ecc.Curve.decodePrivatePoint(entry.getValue().privateKey()));
+                protocolStore.storePreKey(entry.getKey(),
+                    new org.whispersystems.libsignal.state.PreKeyRecord(entry.getKey(), kp));
+            } catch (org.whispersystems.libsignal.InvalidKeyException e) {
+                LOG.warn("Failed to seed pre-key {} into protocolStore", entry.getKey(), e);
+            }
+        }
         String iqId = newIqId();
         BinaryNode iq = PreKeyManager.buildUploadStanza(iqId, creds, preKeys);
         sendIq(iq, response -> {
