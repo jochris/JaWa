@@ -111,13 +111,17 @@ Point your WhatsApp app at the QR (Settings → Linked Devices → Link a Device
 - [x] **M4.5** — Phone-number pairing code (PBKDF2 + AES-CTR wrap, X25519 × 2 + HKDF advSecret derivation; live-verified)
   - [x] **M4.5.1** — `companion_hello` wire-value fix (`platform_id="1"`, canonical display, nibble-packed nonce) + steady-state hardening (w:p keepalive, per-stanza error containment)
   - [x] **M4.5.2** — Post-pair auto-reconnect to login mode (`FrameSocket` disconnect sentinel + `JaWaClient` reconnect handler; closes the 401-revoke window)
-- [~] **M5** — Send + receive text 1-on-1
+- [x] **M5** — Send + receive text 1-on-1 (live-verified end-to-end against a real account: send, decode inbound text, ack + delivery receipt)
   - [x] Pre-key upload (`<iq xmlns=encrypt>`)
   - [x] USync device list query
   - [x] Signal session bootstrap (libsignal X3DH)
-  - [x] Encrypt + send `<message>` (live-verified end-to-end against a real account)
+  - [x] Encrypt + send `<message>`
   - [x] **M5.D.1** — `DeviceSentMessage` wrap for own-companion devices (fixes silent-drop on send-to-self)
-  - [ ] Receive + decrypt incoming `<enc>`
+  - [x] **M5.D.2** — Fan out outgoing message to own companion devices on non-self send (sender's own phone now sees the outgoing message in chat history)
+  - [x] **M5.E** — Receive + decrypt incoming `<enc>` (`MessageReceiver` + `<ack>` + delivery `<receipt>` + active-mode IQ on login)
+  - [x] **M5.E.1** — Seed `creds.signedPreKey` into `JaWaProtocolStore` (unblocks first-contact `pkmsg` decrypt)
+  - [x] **M5.E.2** — Retry receipt with `<retry count>` + `<registration>` reg-id so peer re-encrypts on decrypt failure
+  - [x] **M5.E.3** — Mirror generated one-time pre-keys into the libsignal `protocolStore` (was only in the raw `SignalKeyStore`)
 - [ ] **M6** — Receipts, retries, ack flow
 - [ ] **M7** — Group messaging (Sender Keys distribution + skmsg)
 - [ ] **M8** — Media upload/download (HKDF-AES-CBC + HMAC, mediaConn)
