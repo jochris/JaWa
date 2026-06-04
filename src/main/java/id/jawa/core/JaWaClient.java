@@ -631,9 +631,57 @@ public final class JaWaClient implements AutoCloseable {
         sendReceipt(message, null);
     }
 
-    /** "We couldn't decrypt — please retry with fresh session/keys." */
+    /** Retry-receipt counter — each id is incremented per outbound retry so peer/server know. */
+    private final java.util.concurrent.ConcurrentMap<String, Integer> messageRetries
+        = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final int MAX_RETRY_COUNT = 5;
+
+    /**
+     * "We couldn't decrypt — please re-encrypt for me." Sends a retry receipt with a
+     * {@code <retry>} child carrying the count + a {@code <registration>} child with
+     * our registration id, mirroring whatsmeow's {@code sendRetryReceipt}. The peer
+     * uses these to refetch our pre-key bundle and re-encrypt the message as pkmsg.
+     *
+     * <p>Bare {@code <receipt type=retry>} (no children) is not enough — peer needs
+     * the registration id to know which client to encrypt for.
+     */
     private void sendRetryReceipt(BinaryNode message) {
-        sendReceipt(message, "retry");
+        String id = message.attr("id");
+        String from = message.attr("from");
+        if (id == null || from == null) return;
+
+        int retryCount = messageRetries.merge(id, 1, Integer::sum);
+        if (retryCount > MAX_RETRY_COUNT) {
+            LOG.warn("Giving up retry-receipt for id={} (count={} > {})", id, retryCount, MAX_RETRY_COUNT);
+            return;
+        }
+
+        java.util.Map<String, String> attrs = new java.util.LinkedHashMap<>();
+        attrs.put("id", id);
+        attrs.put("to", from);
+        attrs.put("type", "retry");
+        String participant = message.attr("participant");
+        if (participant != null) attrs.put("participant", participant);
+        String recipient = message.attr("recipient");
+        if (recipient != null) attrs.put("recipient", recipient);
+
+        BinaryNode retry = new BinaryNode("retry", java.util.Map.of(
+            "count", Integer.toString(retryCount),
+            "id",    id,
+            "t",     message.attr("t", "0"),
+            "v",     "1"
+        ), null);
+        BinaryNode registration = new BinaryNode("registration", java.util.Map.of(),
+            encodeUintBE(creds.registrationId, 4));
+
+        send(new BinaryNode("receipt", attrs, java.util.List.of(retry, registration)));
+        LOG.debug("Sent retry receipt id={} count={}", id, retryCount);
+    }
+
+    private static byte[] encodeUintBE(int value, int width) {
+        byte[] out = new byte[width];
+        for (int i = 0; i < width; i++) out[width - 1 - i] = (byte) ((value >>> (8 * i)) & 0xFF);
+        return out;
     }
 
     private void sendReceipt(BinaryNode message, String type) {
