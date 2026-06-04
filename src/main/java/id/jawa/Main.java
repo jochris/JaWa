@@ -92,6 +92,17 @@ public final class Main {
                     System.out.println(">>> Sent message id=" + msgId + " body=\"" + text + "\"");
                 });
             }
+            @Override public void onMessage(id.jawa.message.MessageReceiver.Decoded d) {
+                if (d.text() != null) {
+                    System.out.println(">>> MESSAGE from=" + d.senderJid()
+                        + " id=" + d.msgId()
+                        + " text=\"" + d.text() + "\"");
+                } else {
+                    System.out.println(">>> MESSAGE from=" + d.senderJid()
+                        + " id=" + d.msgId()
+                        + " (non-text payload encType=" + d.encType() + ")");
+                }
+            }
             @Override public void onStanza(id.jawa.binary.BinaryNode node) {
                 System.out.println("RX: " + node.tag() + " " + node.attrs());
             }

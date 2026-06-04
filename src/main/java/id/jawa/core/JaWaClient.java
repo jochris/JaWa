@@ -56,6 +56,13 @@ public final class JaWaClient implements AutoCloseable {
         default void onPaired(String jid, String pushName, String platform) {}
         /** Steady-state connection up. */
         default void onConnected() {}
+        /**
+         * A {@code <message>} stanza was successfully decrypted.
+         *
+         * @param decoded the decoded payload — {@code text} is non-null for plain
+         *                conversation messages, null for media / reactions / etc.
+         */
+        default void onMessage(id.jawa.message.MessageReceiver.Decoded decoded) {}
         /** Inbound stanza after handshake/pairing. */
         default void onStanza(BinaryNode node) {}
         /** Fatal error. */
@@ -414,6 +421,31 @@ public final class JaWaClient implements AutoCloseable {
         });
     }
 
+    /**
+     * Tell the server we want real-time message delivery instead of having stanzas queued
+     * for retrieval. Without this, WA holds messages until the client explicitly drains
+     * them — manifests as "5-min idle then disconnect, no inbound &lt;message&gt; ever fires"
+     * during testing. Mirrors {@code Client.sendPassive(false)} in whatsmeow.
+     */
+    private void sendActivePassive() {
+        String iqId = newIqId();
+        BinaryNode iq = new BinaryNode("iq",
+            java.util.Map.of(
+                "to",    id.jawa.util.Jid.SERVER_WHATSAPP,
+                "xmlns", "passive",
+                "type",  "set",
+                "id",    iqId
+            ),
+            java.util.List.of(new BinaryNode("active", java.util.Map.of(), null)));
+        sendIq(iq, resp -> {
+            if ("error".equals(resp.attr("type"))) {
+                LOG.warn("active/passive IQ rejected: {}", resp);
+            } else {
+                LOG.debug("Server acknowledged active mode (id={})", iqId);
+            }
+        });
+    }
+
     /** Upload {@code PRE_KEY_UPLOAD_COUNT} one-time pre-keys to the server. */
     private void uploadPreKeys() {
         var preKeys = PreKeyManager.generate(creds, signalStore, PRE_KEY_UPLOAD_COUNT);
@@ -458,6 +490,7 @@ public final class JaWaClient implements AutoCloseable {
                 node.attr("jid", creds.meJid),
                 node.attr("lid", creds.meLid),
                 node.attr("platform", creds.platform));
+            sendActivePassive();
             listener.onConnected();
             uploadPreKeys();
             return true;
@@ -473,6 +506,11 @@ public final class JaWaClient implements AutoCloseable {
             } catch (Throwable t) {
                 LOG.warn("Failed to handle link_code notification", t);
             }
+            return true;
+        }
+
+        if ("message".equals(node.tag())) {
+            handleInboundMessage(node);
             return true;
         }
 
@@ -529,6 +567,72 @@ public final class JaWaClient implements AutoCloseable {
         byte[] plain = BinaryEncoder.encode(node);
         byte[] enc = transport.encrypt(plain);
         frame.send(enc);
+    }
+
+    /**
+     * Decrypt an inbound {@code <message>}, fire {@code Listener.onMessage}, and emit
+     * the {@code <ack>} + {@code <receipt>} the server expects. On decrypt failure we
+     * still {@code <ack>} (otherwise the server keeps redelivering forever) and emit
+     * a {@code <receipt type="retry">} so the peer knows to re-encrypt with fresh keys.
+     */
+    private void handleInboundMessage(BinaryNode message) {
+        try {
+            id.jawa.message.MessageReceiver.Decoded decoded =
+                id.jawa.message.MessageReceiver.decode(message, protocolStore);
+            try { listener.onMessage(decoded); }
+            catch (Throwable t) { LOG.warn("listener.onMessage threw", t); }
+            sendAck(message);
+            sendDeliveryReceipt(message);
+        } catch (id.jawa.message.MessageReceiver.DecryptException de) {
+            LOG.warn("Decrypt failed for message id={} from={}: {}",
+                message.attr("id"), message.attr("from"), de.getMessage());
+            sendAck(message);
+            sendRetryReceipt(message);
+        }
+    }
+
+    /**
+     * Transport-level acknowledgement. Without it the server keeps redelivering the
+     * stanza on every reconnect. Mirrors whatsmeow's {@code Client.sendAck}.
+     */
+    private void sendAck(BinaryNode original) {
+        String id = original.attr("id");
+        String from = original.attr("from");
+        if (id == null || from == null) return;
+        java.util.Map<String, String> attrs = new java.util.LinkedHashMap<>();
+        attrs.put("class", original.tag());
+        attrs.put("id", id);
+        attrs.put("to", from);
+        String participant = original.attr("participant");
+        if (participant != null) attrs.put("participant", participant);
+        String recipient = original.attr("recipient");
+        if (recipient != null) attrs.put("recipient", recipient);
+        send(new BinaryNode("ack", attrs, null));
+    }
+
+    /** Application-level "delivered" receipt — what produces the grey single-tick on the sender. */
+    private void sendDeliveryReceipt(BinaryNode message) {
+        sendReceipt(message, null);
+    }
+
+    /** "We couldn't decrypt — please retry with fresh session/keys." */
+    private void sendRetryReceipt(BinaryNode message) {
+        sendReceipt(message, "retry");
+    }
+
+    private void sendReceipt(BinaryNode message, String type) {
+        String id = message.attr("id");
+        String from = message.attr("from");
+        if (id == null || from == null) return;
+        java.util.Map<String, String> attrs = new java.util.LinkedHashMap<>();
+        attrs.put("id", id);
+        attrs.put("to", from);
+        if (type != null) attrs.put("type", type);
+        String participant = message.attr("participant");
+        if (participant != null) attrs.put("participant", participant);
+        String recipient = message.attr("recipient");
+        if (recipient != null) attrs.put("recipient", recipient);
+        send(new BinaryNode("receipt", attrs, null));
     }
 
     @Override

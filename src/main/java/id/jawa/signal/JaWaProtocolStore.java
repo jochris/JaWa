@@ -2,11 +2,14 @@
 package id.jawa.signal;
 
 import id.jawa.store.AuthCreds;
+import id.jawa.store.SignedPreKey;
 import id.jawa.util.crypto.Curve25519;
 import org.whispersystems.libsignal.IdentityKey;
 import org.whispersystems.libsignal.IdentityKeyPair;
 import org.whispersystems.libsignal.InvalidKeyException;
 import org.whispersystems.libsignal.ecc.Curve;
+import org.whispersystems.libsignal.ecc.ECKeyPair;
+import org.whispersystems.libsignal.state.SignedPreKeyRecord;
 import org.whispersystems.libsignal.state.impl.InMemorySignalProtocolStore;
 import org.whispersystems.libsignal.util.KeyHelper;
 
@@ -22,6 +25,12 @@ public final class JaWaProtocolStore extends InMemorySignalProtocolStore {
 
     public JaWaProtocolStore(AuthCreds creds) {
         super(toIdentityKeyPair(creds), creds.registrationId);
+        // Seed our own signed pre-key so libsignal can resolve inbound <enc type=pkmsg>
+        // payloads that reference it. Without this, the first message from any new peer
+        // fails with InvalidKeyIdException ("No such signedprekeyrecord! 1").
+        if (creds.signedPreKey != null) {
+            storeSignedPreKey(creds.signedPreKey.keyId(), toSignedPreKeyRecord(creds.signedPreKey));
+        }
     }
 
     private static IdentityKeyPair toIdentityKeyPair(AuthCreds creds) {
@@ -31,6 +40,18 @@ public final class JaWaProtocolStore extends InMemorySignalProtocolStore {
             return new IdentityKeyPair(pub, Curve.decodePrivatePoint(creds.signedIdentityKey.privateKey()));
         } catch (InvalidKeyException e) {
             throw new IllegalStateException("invalid identity key in AuthCreds", e);
+        }
+    }
+
+    private static SignedPreKeyRecord toSignedPreKeyRecord(SignedPreKey spk) {
+        try {
+            byte[] prefixedPub = Curve25519.prependType(spk.keyPair().publicKey());
+            ECKeyPair kp = new ECKeyPair(
+                Curve.decodePoint(prefixedPub, 0),
+                Curve.decodePrivatePoint(spk.keyPair().privateKey()));
+            return new SignedPreKeyRecord(spk.keyId(), 0L, kp, spk.signature());
+        } catch (InvalidKeyException e) {
+            throw new IllegalStateException("invalid signed pre-key in AuthCreds", e);
         }
     }
 
