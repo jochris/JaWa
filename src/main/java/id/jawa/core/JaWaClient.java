@@ -385,6 +385,25 @@ public final class JaWaClient implements AutoCloseable {
     }
 
     /**
+     * Query the server for the list of groups this account participates in. Each entry
+     * carries the group JID, subject, creator, timestamps, and the per-member device
+     * list (one entry per participant, device-suffixed).
+     */
+    public java.util.concurrent.CompletableFuture<java.util.List<id.jawa.message.GroupListQuery.GroupInfo>>
+            queryJoinedGroups() {
+        String iqId = newIqId();
+        BinaryNode iq = id.jawa.message.GroupListQuery.buildQuery(iqId);
+        LOG.debug("Sent joined-groups query id={}", iqId);
+        return sendIqAsync(iq).thenApply(resp -> {
+            if ("error".equals(resp.attr("type"))) {
+                LOG.warn("Group list query rejected: {}", resp);
+                return java.util.List.of();
+            }
+            return id.jawa.message.GroupListQuery.parseResponse(resp);
+        });
+    }
+
+    /**
      * Convenience: bootstrap Signal sessions for every active device of {@code targetUser}.
      * Runs USync, then fetches the pre-key bundle for each device, then installs sessions.
      */

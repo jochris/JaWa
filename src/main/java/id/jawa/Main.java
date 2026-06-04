@@ -61,6 +61,18 @@ public final class Main {
 
             @Override public void onConnected() {
                 System.out.println(">>> Connected");
+                // Optional: list joined groups (-Djawa.list_groups=1).
+                if ("1".equals(System.getProperty("jawa.list_groups"))) {
+                    client.queryJoinedGroups().whenComplete((groups, err) -> {
+                        if (err != null) { System.err.println(">>> group list failed: " + err); return; }
+                        System.out.println(">>> Joined groups (" + groups.size() + "):");
+                        for (var g : groups) {
+                            System.out.println("    " + g.jid()
+                                + "  subject=\"" + g.subject() + "\""
+                                + "  participants=" + g.participantJids().size());
+                        }
+                    });
+                }
                 // Demo: query devices for me-jid (or another jid via -Djawa.target=...)
                 String target = System.getProperty("jawa.target",
                     client.creds() != null ? client.creds().meJid : null);
