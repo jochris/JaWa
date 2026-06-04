@@ -19,20 +19,23 @@ import org.whispersystems.libsignal.NoSessionException;
 import org.whispersystems.libsignal.SessionCipher;
 import org.whispersystems.libsignal.SignalProtocolAddress;
 import org.whispersystems.libsignal.UntrustedIdentityException;
+import org.whispersystems.libsignal.groups.GroupCipher;
+import org.whispersystems.libsignal.groups.GroupSessionBuilder;
+import org.whispersystems.libsignal.groups.SenderKeyName;
+import org.whispersystems.libsignal.groups.state.SenderKeyStore;
 import org.whispersystems.libsignal.protocol.PreKeySignalMessage;
+import org.whispersystems.libsignal.protocol.SenderKeyDistributionMessage;
 import org.whispersystems.libsignal.protocol.SignalMessage;
 
 /**
  * Decrypt an incoming {@code <message>} stanza: pick the {@code <enc>} child, run
- * libsignal's {@link SessionCipher}, strip the random pad, parse the {@link Wa.Message}
- * protobuf, and unwrap a {@code DeviceSentMessage} envelope when present.
+ * libsignal's {@link SessionCipher} (DMs) or {@link GroupCipher} (groups), strip the
+ * random pad, parse the {@link Wa.Message} protobuf, unwrap a {@code DeviceSentMessage}
+ * envelope when present, and process inline {@code senderKeyDistributionMessage}
+ * payloads so subsequent group {@code skmsg} traffic decrypts.
  *
  * <p>Mirrors {@code decryptMessageNode} in Baileys ({@code Utils/decode-wa-message.ts})
- * and {@code decryptDM} + {@code decryptMessages} in whatsmeow ({@code message.go}).
- *
- * <p>Direct (1-on-1) text messages only at this stage. Group ({@code skmsg}),
- * bot ({@code msmsg}), and any non-text payload types are not yet handled — they'll
- * arrive as a {@link Decoded} with {@code text == null}.
+ * and {@code decryptDM} + {@code decryptGroupMsg} in whatsmeow ({@code message.go}).
  */
 public final class MessageReceiver {
 
@@ -44,27 +47,34 @@ public final class MessageReceiver {
      * Decode result.
      *
      * @param senderJid   sender's device-specific JID (from {@code participant} attr
-     *                    when present, else {@code from}). For direct messages this is
-     *                    the contact's primary or companion device JID.
+     *                    when present, else {@code from}). For groups this is the
+     *                    individual sender device; for DMs it's the contact's device.
+     * @param groupJid    group JID ({@code from} attr) when {@code <message>} is a group
+     *                    message; {@code null} for 1-on-1 DMs.
      * @param msgId       value of the {@code <message id=>} attr.
-     * @param encType     the {@code <enc type=>} value: "pkmsg" or "msg".
+     * @param encType     the {@code <enc type=>} value: "pkmsg", "msg", or "skmsg".
      * @param message     the decrypted, DSM-unwrapped {@link Wa.Message}, or {@code null}
      *                    if no usable {@code <enc>} child was found.
      * @param text        the {@code conversation} field if the message is plain text,
      *                    else {@code null} (e.g. media, reactions, system messages).
      */
-    public record Decoded(String senderJid, String msgId, String encType,
+    public record Decoded(String senderJid, String groupJid, String msgId, String encType,
                           Wa.Message message, String text) {}
 
     /**
-     * Decode {@code messageStanza} using sessions in {@code store}.
+     * Decode {@code messageStanza}. {@code signalStore} holds DM session state;
+     * {@code senderKeyStore} holds group sender-key state. Both are required because
+     * group messages can ride in as either {@code skmsg} (group cipher) or as a
+     * {@code pkmsg}/{@code msg} carrying a {@code SenderKeyDistributionMessage} that
+     * establishes the group sender-key for the next round of {@code skmsg}.
      *
      * @throws DecryptException when the {@code <enc>} payload exists but cannot be
-     *                          decrypted (untrusted identity, no session, bad MAC, etc).
-     *                          The caller should still send an {@code <ack>}, but may
-     *                          choose to send a retry receipt instead of a delivery one.
+     *                          decrypted. The caller should still {@code <ack>} and
+     *                          may send a {@code <receipt type=retry>}.
      */
-    public static Decoded decode(BinaryNode messageStanza, JaWaProtocolStore store)
+    public static Decoded decode(BinaryNode messageStanza,
+                                 JaWaProtocolStore signalStore,
+                                 SenderKeyStore senderKeyStore)
             throws DecryptException {
         String msgId = messageStanza.attr("id");
         String from = messageStanza.attr("from");
@@ -74,9 +84,14 @@ public final class MessageReceiver {
             throw new DecryptException("message has no from/participant attr");
         }
 
+        // For group messages the server addresses the stanza to the group JID via `from`
+        // and identifies the sender via `participant`. For DMs there's no participant.
+        boolean isGroup = participant != null && from != null && !from.equals(participant);
+        String groupJid = isGroup ? from : null;
+
         BinaryNode enc = findEnc(messageStanza);
         if (enc == null) {
-            return new Decoded(senderJidStr, msgId, null, null, null);
+            return new Decoded(senderJidStr, groupJid, msgId, null, null, null);
         }
 
         String encType = enc.attr("type");
@@ -89,20 +104,28 @@ public final class MessageReceiver {
         if (senderJid == null) {
             throw new DecryptException("malformed sender JID: " + senderJidStr);
         }
-        SignalProtocolAddress addr = SessionBootstrap.addressFor(senderJid);
-        SessionCipher cipher = new SessionCipher(store, addr);
+        SignalProtocolAddress senderAddr = SessionBootstrap.addressFor(senderJid);
 
         byte[] padded;
         try {
             padded = switch (encType) {
-                case "pkmsg" -> cipher.decrypt(new PreKeySignalMessage(ciphertext));
-                case "msg"   -> cipher.decrypt(new SignalMessage(ciphertext));
+                case "pkmsg" -> new SessionCipher(signalStore, senderAddr)
+                    .decrypt(new PreKeySignalMessage(ciphertext));
+                case "msg"   -> new SessionCipher(signalStore, senderAddr)
+                    .decrypt(new SignalMessage(ciphertext));
+                case "skmsg" -> {
+                    if (groupJid == null) {
+                        throw new DecryptException("skmsg without group JID");
+                    }
+                    SenderKeyName name = new SenderKeyName(groupJid, senderAddr);
+                    yield new GroupCipher(senderKeyStore, name).decrypt(ciphertext);
+                }
                 default      -> throw new DecryptException("unsupported enc type: " + encType);
             };
         } catch (InvalidVersionException | InvalidMessageException | InvalidKeyException
                 | InvalidKeyIdException | NoSessionException | UntrustedIdentityException
                 | DuplicateMessageException | LegacyMessageException e) {
-            throw new DecryptException("decrypt failed for " + addr + ": " + e, e);
+            throw new DecryptException("decrypt failed for " + senderAddr + ": " + e, e);
         }
 
         byte[] body = MessageEncoder.unpad(padded);
@@ -110,7 +133,13 @@ public final class MessageReceiver {
         try {
             message = Wa.Message.parseFrom(body);
         } catch (InvalidProtocolBufferException e) {
-            throw new DecryptException("invalid Wa.Message proto from " + addr, e);
+            throw new DecryptException("invalid Wa.Message proto from " + senderAddr, e);
+        }
+
+        // Inbound SKDM: a peer is announcing the group sender-key they'll use for
+        // subsequent skmsg traffic in this group. Process now so the next skmsg decrypts.
+        if (message.hasSenderKeyDistributionMessage()) {
+            processSkdm(message.getSenderKeyDistributionMessage(), senderAddr, senderKeyStore);
         }
 
         // Unwrap DSM — when the sender is one of our own other devices echoing a
@@ -126,16 +155,37 @@ public final class MessageReceiver {
             text = message.getExtendedTextMessage().getText();
         }
 
-        LOG.debug("Decoded {} from {} (encType={}, text={})",
-            msgId, senderJidStr, encType, text != null ? "yes" : "no");
-        return new Decoded(senderJidStr, msgId, encType, message, text);
+        LOG.debug("Decoded {} from {}{} (encType={}, text={})",
+            msgId, senderJidStr,
+            groupJid != null ? " in group " + groupJid : "",
+            encType, text != null ? "yes" : "no");
+        return new Decoded(senderJidStr, groupJid, msgId, encType, message, text);
+    }
+
+    private static void processSkdm(Wa.Message.SenderKeyDistributionMessage proto,
+                                    SignalProtocolAddress senderAddr,
+                                    SenderKeyStore senderKeyStore) {
+        String groupId = proto.getGroupId();
+        byte[] axoBytes = proto.getAxolotlSenderKeyDistributionMessage().toByteArray();
+        if (groupId.isEmpty() || axoBytes.length == 0) {
+            LOG.warn("Skipping malformed SKDM (groupId='{}', axoBytes={}B)", groupId, axoBytes.length);
+            return;
+        }
+        try {
+            SenderKeyDistributionMessage skdm = new SenderKeyDistributionMessage(axoBytes);
+            SenderKeyName name = new SenderKeyName(groupId, senderAddr);
+            new GroupSessionBuilder(senderKeyStore).process(name, skdm);
+            LOG.debug("Processed SKDM from {} for group {}", senderAddr, groupId);
+        } catch (LegacyMessageException | InvalidMessageException e) {
+            LOG.warn("Invalid SKDM from {} for group {}: {}", senderAddr, groupId, e.toString());
+        }
     }
 
     private static BinaryNode findEnc(BinaryNode stanza) {
         for (BinaryNode child : stanza.childrenList()) {
             if (!"enc".equals(child.tag())) continue;
             String type = child.attr("type");
-            if ("msg".equals(type) || "pkmsg".equals(type)) return child;
+            if ("msg".equals(type) || "pkmsg".equals(type) || "skmsg".equals(type)) return child;
         }
         return null;
     }

@@ -71,6 +71,7 @@ public final class JaWaClient implements AutoCloseable {
 
     private final AuthStore store;
     private final SignalKeyStore signalStore = new InMemorySignalKeyStore();
+    private final id.jawa.signal.InMemorySenderKeyStore senderKeyStore = new id.jawa.signal.InMemorySenderKeyStore();
     private JaWaProtocolStore protocolStore;  // initialised in connect() once creds are loaded
     private PairingCodeHandler pairCodeHandler; // populated on demand for pair-code flow
     private java.util.concurrent.ScheduledExecutorService keepalive;
@@ -594,7 +595,7 @@ public final class JaWaClient implements AutoCloseable {
     private void handleInboundMessage(BinaryNode message) {
         try {
             id.jawa.message.MessageReceiver.Decoded decoded =
-                id.jawa.message.MessageReceiver.decode(message, protocolStore);
+                id.jawa.message.MessageReceiver.decode(message, protocolStore, senderKeyStore);
             try { listener.onMessage(decoded); }
             catch (Throwable t) { LOG.warn("listener.onMessage threw", t); }
             sendAck(message);
