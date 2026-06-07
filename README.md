@@ -124,6 +124,9 @@ Point your WhatsApp app at the QR (Settings → Linked Devices → Link a Device
   - [x] **M5.E.3** — Mirror generated one-time pre-keys into the libsignal `protocolStore` (was only in the raw `SignalKeyStore`)
 - [ ] **M6** — Receipts, retries, ack flow
 - [ ] **M7** — Group messaging (Sender Keys distribution + skmsg)
+  - [x] **M7 (recv)** — group `skmsg` decrypt + `SenderKeyDistributionMessage` processing on inbound
+  - [x] **M7.G1** — query joined groups via `<iq xmlns="w:g2"><participating/></iq>`
+  - [x] **M7.G2** — send text message to a group (per-device SKDM fan-out + single `<enc type=skmsg>`)
 - [ ] **M8** — Media upload/download (HKDF-AES-CBC + HMAC, mediaConn)
 - [ ] **M9** — App-state sync (LT-Hash, mutations, contact list, chat sync)
 - [ ] **M10** — Reconnect, error handling, ban detection
