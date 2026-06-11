@@ -61,6 +61,21 @@ public final class Main {
 
             @Override public void onConnected() {
                 System.out.println(">>> Connected");
+                // Optional: send a quoted reply (-Djawa.reply_chat / _text / _to_id / _to_sender / _to_text).
+                String replyChat = System.getProperty("jawa.reply_chat");
+                if (replyChat != null && !replyChat.isBlank()) {
+                    String replyText = System.getProperty("jawa.reply_text", "");
+                    String replyToId = System.getProperty("jawa.reply_to_id", "");
+                    String replyToSender = System.getProperty("jawa.reply_to_sender"); // null OK
+                    String replyToText = System.getProperty("jawa.reply_to_text", "");
+                    client.sendReply(replyChat, replyText, replyToId, replyToSender, replyToText)
+                        .whenComplete((msgId, err) -> {
+                            if (err != null) { System.err.println(">>> reply failed: " + err); err.printStackTrace(); return; }
+                            System.out.println(">>> Sent reply id=" + msgId + " text=\"" + replyText
+                                + "\" quoting id=" + replyToId);
+                        });
+                    return;
+                }
                 // Optional: send a reaction (-Djawa.reaction_chat / _target_id / _target_sender / _emoji).
                 String reactChat = System.getProperty("jawa.reaction_chat");
                 if (reactChat != null && !reactChat.isBlank()) {

@@ -487,6 +487,32 @@ public final class JaWaClient implements AutoCloseable {
     }
 
     /**
+     * Send a text reply that quotes an existing message. Routes DM vs group based on
+     * {@code chatJid} suffix.
+     *
+     * @param chatJid       chat where the reply lives (group JID or peer's bare JID)
+     * @param text          the new reply text
+     * @param quotedMsgId   id of the message being quoted
+     * @param quotedSender  sender JID of the quoted message; {@code null} for DM
+     * @param quotedText    short preview of the quoted text; used to render the
+     *                      block-quote on the recipient's UI
+     * @return future resolving to the reply message's id
+     */
+    public java.util.concurrent.CompletableFuture<String> sendReply(
+            String chatJid,
+            String text,
+            String quotedMsgId,
+            String quotedSender,
+            String quotedText) {
+        id.jawa.proto.Wa.Message msg = MessageEncoder.reply(
+            text, quotedMsgId, quotedSender, quotedText);
+        if (chatJid.endsWith("@g.us")) {
+            return sendGroupMessage(chatJid, msg);
+        }
+        return sendDmMessage(chatJid, msg);
+    }
+
+    /**
      * Query the server for the list of groups this account participates in. Each entry
      * carries the group JID, subject, creator, timestamps, and the per-member device
      * list (one entry per participant, device-suffixed).

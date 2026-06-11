@@ -65,6 +65,41 @@ public final class MessageEncoder {
      * @param emoji           the reaction text — typically a single emoji. Pass
      *                        an empty string to remove an existing reaction.
      */
+    /**
+     * Build an {@code extendedTextMessage} reply that quotes an existing message.
+     *
+     * <p>The {@code quotedMessage} stub is enough for WhatsApp to render the block-quote
+     * preview above the reply text — it does not need the full original content, just
+     * the conversation field is sufficient.
+     *
+     * @param text          the new reply text
+     * @param quotedMsgId   the original message's id
+     * @param quotedSender  the original sender's JID. For group replies, this is the
+     *                      sender's device JID (e.g. {@code 6289...@lid}); for DMs, null
+     * @param quotedText    a short preview of the original text (used to render the
+     *                      block-quote). Pass the same text that was decoded — if null
+     *                      or empty, an empty conversation stub is used
+     */
+    public static Wa.Message reply(String text,
+                                   String quotedMsgId,
+                                   String quotedSender,
+                                   String quotedText) {
+        Wa.Message quotedStub = Wa.Message.newBuilder()
+            .setConversation(quotedText == null ? "" : quotedText)
+            .build();
+        Wa.ContextInfo.Builder ctx = Wa.ContextInfo.newBuilder()
+            .setStanzaId(quotedMsgId)
+            .setQuotedMessage(quotedStub);
+        if (quotedSender != null && !quotedSender.isBlank()) {
+            ctx.setParticipant(quotedSender);
+        }
+        Wa.Message.ExtendedTextMessage extended = Wa.Message.ExtendedTextMessage.newBuilder()
+            .setText(text)
+            .setContextInfo(ctx.build())
+            .build();
+        return Wa.Message.newBuilder().setExtendedTextMessage(extended).build();
+    }
+
     public static Wa.Message reaction(String chatJid,
                                       String targetMsgId,
                                       String targetParticipant,
