@@ -123,6 +123,12 @@ the application JVM. Useful demo knobs: `jawa.session`, `jawa.phone`, `jawa.targ
 - [Sending Messages](#sending-messages)
     - [Text Message (DM)](#text-message-dm)
     - [Text Message (Group)](#text-message-group)
+    - [Send Arbitrary `Wa.Message`](#send-arbitrary-wamessage)
+- [Modify Messages](#modify-messages)
+    - [Reaction](#reaction)
+    - [Reply / Quote](#reply--quote)
+    - [Edit Message](#edit-message)
+    - [Revoke (Delete for Everyone)](#revoke-delete-for-everyone)
 - [Receiving Messages](#receiving-messages)
 - [WhatsApp IDs / JIDs Explained](#whatsapp-ids--jids-explained)
 - [User & Device Queries](#user--device-queries)
@@ -226,10 +232,27 @@ You don't want to re-pair every run. `FileAuthStore` persists creds to a file. O
 subsequent `connect()`, JaWa loads them and skips QR/pair-code entirely.
 
 ```java
-FileAuthStore store = new FileAuthStore(Path.of("sessions/mydev.session"));
-JaWaClient client = new JaWaClient(store);
+Path session = Path.of("sessions/mydev.session");
+Path signal  = Path.of("sessions/mydev.signal"); // optional, see below
+
+FileAuthStore store = new FileAuthStore(session);
+JaWaClient client = new JaWaClient(store, signal);
 client.connect();   // first run: fresh keys + QR/pair-code
 client.connect();   // second run: loaded creds → straight to login
+```
+
+The second constructor argument is an optional directory for **persistent Signal
+state**. When set, libsignal sessions and one-time pre-keys survive process
+restart, so the first message from a previously-paired peer no longer triggers
+`NoSessionException` → retry-receipt round trip. Pass `null` (or use the
+single-arg overload) to keep Signal state in memory.
+
+```
+sessions/
+├── mydev.session                          # AuthCreds: Noise + identity keys
+└── mydev.signal/
+    ├── sessions/<base64name>__<dev>.session   # one libsignal SessionRecord per peer device
+    └── prekeys/<id>.prekey                    # one 64-byte priv||pub per one-time pre-key
 ```
 
 Implement your own `AuthStore` for SQLite / encrypted keystore / cloud-backed
@@ -242,10 +265,11 @@ public interface AuthStore {
 }
 ```
 
-> [!WARNING]
-> The Signal Protocol stores (session, pre-key, sender-key state) are currently
-> **in-memory only** (`InMemorySignalKeyStore`, `InMemorySenderKeyStore`). They are
-> rebuilt on every reconnect. Persistent Signal storage is tracked under **M12**.
+> [!NOTE]
+> **Sender-key state** (group sender-keys for outbound `skmsg`) is **still
+> in-memory** (`InMemorySenderKeyStore`). After restart, the first outbound
+> group message rebuilds and re-distributes the SKDM to every participant
+> device. Persistent sender-key storage is tracked under **M12.C**.
 
 ## Handling Events
 
@@ -375,6 +399,95 @@ Group send is a Sender Keys protocol:
 - Members that don't yet have your sender-key process the SKDM to derive the key for
   subsequent `skmsg` traffic.
 
+### Send Arbitrary `Wa.Message`
+
+`sendText` / `sendGroupText` are thin wrappers over the lower-level
+`sendDmMessage` / `sendGroupMessage` overloads that accept any `Wa.Message` protobuf
+directly. The reaction / reply / edit / revoke helpers below use these internally;
+they're also useful for proto types JaWa doesn't yet expose a named helper for.
+
+```java
+import id.jawa.proto.Wa;
+
+Wa.Message custom = Wa.Message.newBuilder()
+    .setExtendedTextMessage(Wa.Message.ExtendedTextMessage.newBuilder()
+        .setText("**bold** isn't a thing, but extendedText carries metadata"))
+    .build();
+
+client.sendDmMessage("628xxx@s.whatsapp.net", custom).join();
+client.sendGroupMessage("120363...@g.us", custom).join();
+```
+
+## Modify Messages
+
+All four helpers route DM vs group automatically based on the chat JID suffix
+(`@g.us` → group, otherwise DM) and return the new outbound message's id.
+
+### Reaction
+
+Attach an emoji to an existing message.
+
+```java
+String reactionId = client.sendReaction(
+    "120363...@g.us",                       // chat where the target lives
+    "ACD57CB93B82719FD44D1F231C89F352",     // target message id
+    "224983875903488@lid",                  // target sender device JID (group only; null for DMs)
+    /* fromMe = */ false,                   // true if the target was your own message
+    "🔥"                                     // emoji (empty string removes)
+).join();
+```
+
+### Reply / Quote
+
+Send a text reply that quotes an existing message. The recipient's UI renders a
+block-quote preview using `quotedText`.
+
+```java
+String replyId = client.sendReply(
+    "120363...@g.us",
+    "ok di-reaction 🔥",                    // new reply text
+    "ACD57CB93B82719FD44D1F231C89F352",     // quoted message id
+    "224983875903488@lid",                  // quoted sender (group); null for DM
+    "test reaction"                         // preview of the quoted text
+).join();
+```
+
+### Edit Message
+
+Replace the text of a message you previously sent. Subject to WhatsApp's ~15-minute
+edit window — older messages are rejected server-side.
+
+```java
+String editId = client.sendEdit(
+    "120363...@g.us",
+    "E1DC8330D43C02D9",                     // the original message's id
+    "hello from jawa (edited)"
+).join();
+```
+
+### Revoke (Delete for Everyone)
+
+Replaces the original with WhatsApp's "This message was deleted" placeholder for
+every participant.
+
+```java
+// revoke your own message
+client.sendRevoke(
+    "120363...@g.us",
+    "E1DC8330D43C02D9",
+    /* targetParticipant = */ null,
+    /* fromMe = */ true
+).join();
+
+// admin revoking someone else's message in a group you administer
+client.sendRevoke(
+    "120363...@g.us",
+    "ACD57CB93B82719FD44D1F231C89F352",
+    "224983875903488@lid",
+    /* fromMe = */ false
+).join();
+```
+
 ## Receiving Messages
 
 Implement `Listener.onMessage(MessageReceiver.Decoded)`:
@@ -480,12 +593,17 @@ For protocol experimentation or features JaWa doesn't expose yet.
 ```java
 import id.jawa.binary.BinaryNode;
 
-// <presence type="available" name="MyBot"/>
-client.send(BinaryNode.of("presence", Map.of(
-    "type", "available",
-    "name", "MyBot"
-)));
+// <chatstate from="..."><composing/></chatstate>
+client.send(new BinaryNode("chatstate",
+    Map.of("to", "628xxx@s.whatsapp.net"),
+    List.of(BinaryNode.of("composing"))));
 ```
+
+> [!NOTE]
+> `<presence type="available">` is **emitted automatically** after every successful
+> login (with `creds.pushName` as the display name), so peers see the device as
+> online and the server delivers new `<message>` stanzas. You don't need to send
+> it manually.
 
 ### Send IQ with Response
 
@@ -538,7 +656,15 @@ client.sendIqAsync(iq).thenAccept(response -> {
 - [ ] **M9** — App-state sync (LT-Hash, mutations, contact list, chat sync)
 - [ ] **M10** — Reconnect, error handling, ban detection
 - [ ] **M11** — Misc message types (reactions, edits, polls, replies, lists)
+  - [x] **M11.A** — send reaction to a message (DM + group)
+  - [x] **M11.B** — send quoted reply (DM + group)
+  - [x] **M11.C** — edit a previously-sent message (DM + group)
+  - [x] **M11.D** — revoke (delete-for-everyone) a message (DM + group)
 - [ ] **M12** — Pluggable storage backends (in-memory, file, SQLite)
+  - [x] **M12.A** — file-backed libsignal `SessionStore` (sessions survive restart, no `NoSessionException`/retry-receipt churn for previously-paired peers)
+  - [x] **M12.B** — file-backed JaWa pre-key store (one-time pre-keys survive restart, re-mirrored into libsignal on connect)
+  - [ ] **M12.C** — file-backed sender-key store (group sender-key state)
+- [x] **core** — `<presence type="available">` on login + ack `<notification>`/`<receipt>` (without these the server treats the device as offline and stops delivering `<message>` stanzas)
 
 ## Gotchas
 
