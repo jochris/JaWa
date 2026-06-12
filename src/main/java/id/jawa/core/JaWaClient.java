@@ -63,6 +63,13 @@ public final class JaWaClient implements AutoCloseable {
          *                conversation messages, null for media / reactions / etc.
          */
         default void onMessage(id.jawa.message.MessageReceiver.Decoded decoded) {}
+        /**
+         * Inbound {@code <receipt>} stanza, already parsed into a {@link id.jawa.message.Receipt}.
+         * Fires before {@link #onStanza}; consumers that care about delivery/read/played
+         * lifecycle should override this instead of pattern-matching the raw stanza.
+         */
+        default void onReceipt(id.jawa.message.Receipt receipt) {}
+
         /** Inbound stanza after handshake/pairing. */
         default void onStanza(BinaryNode node) {}
         /** Fatal error. */
@@ -990,6 +997,14 @@ public final class JaWaClient implements AutoCloseable {
         if ("notification".equals(node.tag()) || "receipt".equals(node.tag())) {
             try { sendAck(node); }
             catch (Throwable t) { LOG.warn("Failed to ack {}", node.tag(), t); }
+            if ("receipt".equals(node.tag())) {
+                try {
+                    id.jawa.message.Receipt parsed = id.jawa.message.Receipt.parse(node);
+                    if (parsed != null) listener.onReceipt(parsed);
+                } catch (Throwable t) {
+                    LOG.warn("Failed to dispatch onReceipt", t);
+                }
+            }
             return false;
         }
 
@@ -1162,6 +1177,62 @@ public final class JaWaClient implements AutoCloseable {
         byte[] out = new byte[width];
         for (int i = 0; i < width; i++) out[width - 1 - i] = (byte) ((value >>> (8 * i)) & 0xFF);
         return out;
+    }
+
+    /**
+     * Send a read receipt (blue ticks). For DMs, pass {@code senderJid=null}. For groups,
+     * {@code senderJid} is the message sender's device JID (the {@code participant} attr
+     * on the original {@code <message>}).
+     *
+     * @param chatJid   the chat where the message lives (peer's bare JID or group {@code @g.us})
+     * @param msgId     the message id being marked as read
+     * @param senderJid sender's device JID for groups; {@code null} for DMs
+     */
+    public void sendReadReceipt(String chatJid, String msgId, String senderJid) {
+        sendStateReceipt(chatJid, msgId, senderJid, "read");
+    }
+
+    /** Send a played receipt for a voice note. See {@link #sendReadReceipt} for arg semantics. */
+    public void sendPlayedReceipt(String chatJid, String msgId, String senderJid) {
+        sendStateReceipt(chatJid, msgId, senderJid, "played");
+    }
+
+    /**
+     * Send a read/played receipt for multiple messages in one stanza. Useful when
+     * catching up a backlog. The first id rides as the {@code <receipt id=...>} attr,
+     * the rest as {@code <list><item id=.../>...} children.
+     */
+    public void sendReadReceiptBatch(String chatJid, java.util.List<String> msgIds, String senderJid) {
+        sendStateReceiptBatch(chatJid, msgIds, senderJid, "read");
+    }
+
+    private void sendStateReceipt(String chatJid, String msgId, String senderJid, String type) {
+        sendStateReceiptBatch(chatJid, java.util.List.of(msgId), senderJid, type);
+    }
+
+    private void sendStateReceiptBatch(String chatJid, java.util.List<String> msgIds,
+                                       String senderJid, String type) {
+        if (msgIds.isEmpty()) return;
+        java.util.Map<String, String> attrs = new java.util.LinkedHashMap<>();
+        attrs.put("id", msgIds.get(0));
+        attrs.put("type", type);
+        attrs.put("to", chatJid);
+        attrs.put("t", Long.toString(System.currentTimeMillis() / 1000));
+        if (senderJid != null && !senderJid.isBlank() && chatJid.endsWith("@g.us")) {
+            attrs.put("participant", senderJid);
+        }
+        BinaryNode receipt;
+        if (msgIds.size() == 1) {
+            receipt = new BinaryNode("receipt", attrs, null);
+        } else {
+            java.util.List<BinaryNode> items = new java.util.ArrayList<>();
+            for (int i = 1; i < msgIds.size(); i++) {
+                items.add(BinaryNode.of("item", java.util.Map.of("id", msgIds.get(i))));
+            }
+            BinaryNode list = new BinaryNode("list", java.util.Map.of(), items);
+            receipt = new BinaryNode("receipt", attrs, java.util.List.of(list));
+        }
+        send(receipt);
     }
 
     private void sendReceipt(BinaryNode message, String type) {

@@ -136,6 +136,9 @@ the application JVM. Useful demo knobs: `jawa.session`, `jawa.phone`, `jawa.targ
     - [Send Document](#send-document)
     - [Download Received Media](#download-received-media)
     - [Low-level Media APIs](#low-level-media-apis)
+- [Receipts](#receipts)
+    - [Send Read / Played Receipt](#send-read--played-receipt)
+    - [Observe Receipts from Peers](#observe-receipts-from-peers)
 - [Receiving Messages](#receiving-messages)
 - [WhatsApp IDs / JIDs Explained](#whatsapp-ids--jids-explained)
 - [User & Device Queries](#user--device-queries)
@@ -613,6 +616,42 @@ verification, and AES-CBC decrypt:
 `downloadByUrl` is preferred when `url` is set (one round-trip); `downloadByDirectPath`
 fetches a fresh `mediaConn` then tries each host until one returns 200.
 
+## Receipts
+
+WhatsApp's lifecycle ticks (delivered, read, played) ride on `<receipt>` stanzas.
+JaWa auto-acks every inbound receipt to keep the offline queue clear; consumers
+that care about peer-side state hook into them via `Listener.onReceipt`.
+
+### Send Read / Played Receipt
+
+```java
+// DM: a peer sent us a message we just rendered
+client.sendReadReceipt("628xxx@s.whatsapp.net", msgId, /* senderJid = */ null);
+
+// Group: someone in the group sent a message — senderJid is the participant device JID
+client.sendReadReceipt("120363...@g.us", msgId, "224983875903488@lid");
+
+// Voice note we just played back
+client.sendPlayedReceipt(chatJid, msgId, senderJid);
+
+// Batched — first id in the receipt attr, the rest under <list><item id=.../>...
+client.sendReadReceiptBatch(chatJid, List.of(id1, id2, id3), senderJid);
+```
+
+### Observe Receipts from Peers
+
+```java
+@Override public void onReceipt(Receipt r) {
+    String kind = r.type() == null ? "delivered" : r.type();   // null = delivery (one tick)
+    System.out.println(kind + " for " + r.msgIds() + " in " + r.chatJid()
+        + (r.senderJid() != null ? " by " + r.senderJid() : ""));
+}
+```
+
+Possible `Receipt.type()` values: `null` (delivery), `"read"`, `"played"`,
+`"retry"` (peer couldn't decrypt — JaWa already re-encrypts automatically),
+`"server-error"`, `"sender"` (server confirming our group fan-out).
+
 ## Receiving Messages
 
 Implement `Listener.onMessage(MessageReceiver.Decoded)`:
@@ -772,7 +811,11 @@ client.sendIqAsync(iq).thenAccept(response -> {
   - [x] **M5.E.1** — Seed `creds.signedPreKey` into `JaWaProtocolStore` (unblocks first-contact `pkmsg` decrypt)
   - [x] **M5.E.2** — Retry receipt with `<retry count>` + `<registration>` reg-id so peer re-encrypts on decrypt failure
   - [x] **M5.E.3** — Mirror generated one-time pre-keys into the libsignal `protocolStore` (was only in the raw `SignalKeyStore`)
-- [ ] **M6** — Receipts, retries, ack flow
+- [x] **M6** — Receipts, retries, ack flow
+  - [x] auto-ack inbound `<notification>` and `<receipt>` (core fix, prevents offline queue stall)
+  - [x] `<receipt type="retry">` for inbound decrypt failures (M5.E.2)
+  - [x] `sendReadReceipt` / `sendPlayedReceipt` / `sendReadReceiptBatch` public APIs
+  - [x] `Listener.onReceipt(Receipt)` callback so consumers see peer-side delivery / read / played lifecycle
 - [ ] **M7** — Group messaging (Sender Keys distribution + skmsg)
   - [x] **M7 (recv)** — group `skmsg` decrypt + `SenderKeyDistributionMessage` processing on inbound
   - [x] **M7.G1** — query joined groups via `<iq xmlns="w:g2"><participating/></iq>`
