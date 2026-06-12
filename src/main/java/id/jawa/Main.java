@@ -71,6 +71,32 @@ public final class Main {
 
             @Override public void onConnected() {
                 System.out.println(">>> Connected");
+                // Optional: send a static location pin (-Djawa.loc_chat / _lat / _lng / _name / _address).
+                String locChat = System.getProperty("jawa.loc_chat");
+                if (locChat != null && !locChat.isBlank()) {
+                    double lat = Double.parseDouble(System.getProperty("jawa.loc_lat", "0"));
+                    double lng = Double.parseDouble(System.getProperty("jawa.loc_lng", "0"));
+                    String locName = System.getProperty("jawa.loc_name", "");
+                    String locAddr = System.getProperty("jawa.loc_address", "");
+                    client.sendLocation(locChat, lat, lng, locName, locAddr)
+                        .whenComplete((id, err) -> {
+                            if (err != null) { System.err.println(">>> location send failed: " + err); err.printStackTrace(); return; }
+                            System.out.println(">>> Sent location id=" + id + " (" + lat + "," + lng + ")");
+                        });
+                    return;
+                }
+                // Optional: send a contact card (-Djawa.contact_chat / _name / _vcard).
+                String contactChat = System.getProperty("jawa.contact_chat");
+                if (contactChat != null && !contactChat.isBlank()) {
+                    String dn = System.getProperty("jawa.contact_name", "Contact");
+                    String vcard = System.getProperty("jawa.contact_vcard", "");
+                    client.sendContact(contactChat, dn, vcard)
+                        .whenComplete((id, err) -> {
+                            if (err != null) { System.err.println(">>> contact send failed: " + err); err.printStackTrace(); return; }
+                            System.out.println(">>> Sent contact id=" + id);
+                        });
+                    return;
+                }
                 // Optional: send a poll (-Djawa.poll_chat / _name / _options (pipe-separated) / _count).
                 String pollChat = System.getProperty("jawa.poll_chat");
                 if (pollChat != null && !pollChat.isBlank()) {

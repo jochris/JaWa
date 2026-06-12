@@ -127,6 +127,8 @@ the application JVM. Useful demo knobs: `jawa.session`, `jawa.phone`, `jawa.targ
 - [Modify Messages](#modify-messages)
     - [Reaction](#reaction)
     - [Poll](#poll)
+    - [Send Location](#send-location)
+    - [Send Contact](#send-contact)
     - [Mentions](#mentions)
     - [Reply / Quote](#reply--quote)
     - [Edit Message](#edit-message)
@@ -473,6 +475,40 @@ client.sendPoll(
 > ({@code pollCreationMessageV3}); higher values produce multi-select
 > ({@code pollCreationMessage} V1). Receiver app renders proper radio /
 > checkbox UI accordingly.
+
+### Send Location
+
+Static map pin at the given coordinates. Optional `name` / `address` render as a
+caption below the pin.
+
+```java
+client.sendLocation(
+    "628xxx@s.whatsapp.net",
+    -6.1753924,                          // latitude
+    106.8271528,                         // longitude
+    "Monas Jakarta",                     // name — nullable
+    "Gambir, Central Jakarta"            // address — nullable
+).join();
+```
+
+### Send Contact
+
+Share a vCard. Caller supplies the vCard string — minimal shape:
+
+```java
+String vcard = """
+    BEGIN:VCARD
+    VERSION:3.0
+    FN:Jane Doe
+    TEL;type=CELL;type=VOICE;waid=628xxx:+62 8xxx
+    END:VCARD
+    """;
+
+client.sendContact("628yyy@s.whatsapp.net", "Jane Doe", vcard).join();
+```
+
+The `waid=` segment in the `TEL` line is what WhatsApp uses to render the
+"Message" button on the contact card — must match the number's WA registration.
 
 ### Mentions
 
@@ -1083,6 +1119,8 @@ client.sendIqAsync(iq).thenAccept(response -> {
   - [x] **M11.F** — `sendTextWithMentions` — tag users via `extendedTextMessage.contextInfo.mentionedJid`; recipient renders each `@<number>` in the body as a tappable handle and pings the mentioned user in groups
   - [x] **M11.E.D** — `sendPoll` — native poll bubble via `pollCreationMessageV3` (single-select) or `pollCreationMessage` V1 (multi); per-poll random 32-byte vote encryption key ridden in `messageContextInfo.messageSecret`
   - [x] **M11.G** — view-once: `sendImageViewOnce` / `sendVideoViewOnce` / `sendAudioViewOnce` wrap the inner media in `viewOnceMessageV2` (image/video) or `viewOnceMessageV2Extension` (audio); receiver can open the media exactly once before it's purged
+  - [x] **M11.H** — receive interactive responses: `Decoded.interactive` carries the parsed `buttonsResponseMessage` / `listResponseMessage` / `interactiveResponseMessage` so bots can react to button / row / native-flow taps
+  - [x] **M11.I** — `sendLocation` (static map pin via `locationMessage`) + `sendContact` (vCard via `contactMessage`)
   - [ ] **M11.E.G** — carousel (`interactiveMessage.carouselMessage`): low-level API `sendCarousel` lands but each card needs an `imageMessage`/`videoMessage` header, which depends on the M8 media pipeline being wired into card construction
 - [x] **M12** — Pluggable storage backends (in-memory, file, SQLite)
   - [x] **M12.A** — file-backed libsignal `SessionStore` (sessions survive restart, no `NoSessionException`/retry-receipt churn for previously-paired peers)

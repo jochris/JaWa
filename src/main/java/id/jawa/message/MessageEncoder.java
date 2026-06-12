@@ -52,6 +52,40 @@ public final class MessageEncoder {
     }
 
     /**
+     * Build a {@code locationMessage} — a static map pin at the given coordinates.
+     * {@code name} / {@code address} render as a caption below the pin; pass empty
+     * strings to skip.
+     */
+    public static Wa.Message locationMessage(double latitude, double longitude,
+                                             String name, String address) {
+        Wa.Message.LocationMessage.Builder b = Wa.Message.LocationMessage.newBuilder()
+            .setDegreesLatitude(latitude)
+            .setDegreesLongitude(longitude);
+        if (name != null && !name.isEmpty())       b.setName(name);
+        if (address != null && !address.isEmpty()) b.setAddress(address);
+        return Wa.Message.newBuilder().setLocationMessage(b.build()).build();
+    }
+
+    /**
+     * Build a {@code contactMessage} with the given vCard. Caller is responsible for
+     * supplying a valid vCard string — minimal example:
+     * <pre>
+     * BEGIN:VCARD
+     * VERSION:3.0
+     * FN:Jane Doe
+     * TEL;type=CELL;type=VOICE;waid=628xxx:+62 8xxx
+     * END:VCARD
+     * </pre>
+     */
+    public static Wa.Message contactMessage(String displayName, String vcard) {
+        Wa.Message.ContactMessage contact = Wa.Message.ContactMessage.newBuilder()
+            .setDisplayName(displayName == null ? "" : displayName)
+            .setVcard(vcard)
+            .build();
+        return Wa.Message.newBuilder().setContactMessage(contact).build();
+    }
+
+    /**
      * Wrap {@code inner} as a view-once message ({@code viewOnceMessageV2}). Recipient
      * sees the media exactly once before the server purges it from their chat history.
      * Use {@link #viewOnceExtensionWrap} for {@code audioMessage} (different proto field).

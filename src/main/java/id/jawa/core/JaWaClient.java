@@ -463,6 +463,30 @@ public final class JaWaClient implements AutoCloseable {
     }
 
     /**
+     * Send a static location pin. {@code name} / {@code address} render as a caption
+     * below the pin; pass {@code null} or empty to skip.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendLocation(
+            String chatJid, double latitude, double longitude, String name, String address) {
+        id.jawa.proto.Wa.Message msg = MessageEncoder.locationMessage(latitude, longitude, name, address);
+        return chatJid.endsWith("@g.us")
+            ? sendGroupMessage(chatJid, msg)
+            : sendDmMessage(chatJid, msg);
+    }
+
+    /**
+     * Send a contact card. Caller supplies a valid vCard string; see
+     * {@link MessageEncoder#contactMessage} for the minimal shape.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendContact(
+            String chatJid, String displayName, String vcard) {
+        id.jawa.proto.Wa.Message msg = MessageEncoder.contactMessage(displayName, vcard);
+        return chatJid.endsWith("@g.us")
+            ? sendGroupMessage(chatJid, msg)
+            : sendDmMessage(chatJid, msg);
+    }
+
+    /**
      * Send any {@link id.jawa.proto.Wa.Message} (text, reaction, etc.) as a DM. Handles
      * USync device-list query, pre-key bundle fetch, Signal session install, per-device
      * encrypt + DSM fan-out to own companion devices.
