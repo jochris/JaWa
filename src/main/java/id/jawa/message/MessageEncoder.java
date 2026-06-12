@@ -52,6 +52,26 @@ public final class MessageEncoder {
     }
 
     /**
+     * Build a text message that tags one or more users. The receiver's app renders the
+     * mention as a tappable handle that opens the mentioned user's profile.
+     *
+     * <p>Required shape: the {@code body} text must already contain {@code @<number>}
+     * for each mention (e.g. {@code "halo @628xxx"}); {@code mentionedBareJids} must
+     * list the full bare JIDs in matching order (e.g. {@code "628xxx@s.whatsapp.net"}).
+     * WhatsApp uses the JID list to know who to notify and the {@code @<number>} in
+     * the body to know where to render the highlight.
+     */
+    public static Wa.Message textWithMentions(String body, java.util.List<String> mentionedBareJids) {
+        Wa.ContextInfo.Builder ctx = Wa.ContextInfo.newBuilder();
+        for (String jid : mentionedBareJids) ctx.addMentionedJid(jid);
+        Wa.Message.ExtendedTextMessage extended = Wa.Message.ExtendedTextMessage.newBuilder()
+            .setText(body)
+            .setContextInfo(ctx.build())
+            .build();
+        return Wa.Message.newBuilder().setExtendedTextMessage(extended).build();
+    }
+
+    /**
      * Common skeleton shared by every media-message builder. Inlining instead of
      * factoring out keeps each named helper readable as a single block.
      */

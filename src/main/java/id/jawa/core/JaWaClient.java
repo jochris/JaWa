@@ -433,6 +433,19 @@ public final class JaWaClient implements AutoCloseable {
     }
 
     /**
+     * Send a text that tags one or more users. The {@code text} must contain
+     * {@code @<number>} for each mention; {@code mentionedBareJids} lists the matching
+     * full bare JIDs. Routes DM vs group based on {@code chatJid} suffix.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendTextWithMentions(
+            String chatJid, String text, java.util.List<String> mentionedBareJids) {
+        id.jawa.proto.Wa.Message msg = MessageEncoder.textWithMentions(text, mentionedBareJids);
+        return chatJid.endsWith("@g.us")
+            ? sendGroupMessage(chatJid, msg)
+            : sendDmMessage(chatJid, msg);
+    }
+
+    /**
      * Send any {@link id.jawa.proto.Wa.Message} (text, reaction, etc.) as a DM. Handles
      * USync device-list query, pre-key bundle fetch, Signal session install, per-device
      * encrypt + DSM fan-out to own companion devices.

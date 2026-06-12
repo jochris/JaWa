@@ -71,6 +71,21 @@ public final class Main {
 
             @Override public void onConnected() {
                 System.out.println(">>> Connected");
+                // Optional: send a text with @-mentions (-Djawa.mention_chat / _text / _jids).
+                // _jids = comma-separated bare JIDs in matching order to @<number> in _text.
+                String mentionChat = System.getProperty("jawa.mention_chat");
+                if (mentionChat != null && !mentionChat.isBlank()) {
+                    String text = System.getProperty("jawa.mention_text", "");
+                    String jidsCsv = System.getProperty("jawa.mention_jids", "");
+                    java.util.List<String> jids = new java.util.ArrayList<>();
+                    for (String j : jidsCsv.split(",")) if (!j.isBlank()) jids.add(j.trim());
+                    client.sendTextWithMentions(mentionChat, text, jids)
+                        .whenComplete((id, err) -> {
+                            if (err != null) { System.err.println(">>> mention send failed: " + err); err.printStackTrace(); return; }
+                            System.out.println(">>> Sent mention id=" + id + " (" + jids.size() + " jid(s))");
+                        });
+                    return;
+                }
                 // Optional: hardcoded interactive demos for live testing native flow types
                 // (-Djawa.demo_chat=<jid> -Djawa.demo=mixed_cta|carousel|single_select|send_location|address|quick_reply).
                 String demoChat = System.getProperty("jawa.demo_chat");

@@ -126,6 +126,7 @@ the application JVM. Useful demo knobs: `jawa.session`, `jawa.phone`, `jawa.targ
     - [Send Arbitrary `Wa.Message`](#send-arbitrary-wamessage)
 - [Modify Messages](#modify-messages)
     - [Reaction](#reaction)
+    - [Mentions](#mentions)
     - [Reply / Quote](#reply--quote)
     - [Edit Message](#edit-message)
     - [CTA Buttons (URL / Copy / Call / Quick-Reply)](#cta-buttons-url--copy--call--quick-reply)
@@ -449,6 +450,28 @@ String reactionId = client.sendReaction(
     "🔥"                                     // emoji (empty string removes)
 ).join();
 ```
+
+### Mentions
+
+Tag one or more users in a text. The receiver app renders each `@<number>` as
+a tappable handle that opens the mentioned user's profile and, in groups, pings
+that user.
+
+```java
+client.sendTextWithMentions(
+    "120363...@g.us",                              // chat (DM bare JID or group @g.us)
+    "halo @628aaa @628bbb dah pada bangun? 👋",   // body — must contain @<number> for each mention
+    List.of(
+        "628aaa@s.whatsapp.net",                   // full bare JIDs, in matching order
+        "628bbb@s.whatsapp.net"
+    )
+).join();
+```
+
+> [!IMPORTANT]
+> The `@<number>` in the body and the `mentionedBareJids` list are independent
+> wires — WhatsApp uses the list to know who to notify, the body to know where
+> to highlight. Forget either and the mention silently degrades to plain text.
 
 ### Reply / Quote
 
@@ -991,6 +1014,7 @@ client.sendIqAsync(iq).thenAccept(response -> {
   - [x] **M11.E.B** — `sendButtonsMessage` (quick-reply buttons, max 3); receiver renders proper button bubbles
   - [x] **M11.E.biz** — append `<biz>` stanza node alongside `<message>` when payload is buttons/list/interactive/template — without this the receiver app silently drops the interactive surface
   - [x] **M11.E.C** — CTA buttons via `interactiveMessage.nativeFlowMessage`: `CtaButton.url`, `.copy`, `.call`, `.quickReply`, `.singleSelect` — confirmed rendering on regular accounts
+  - [x] **M11.F** — `sendTextWithMentions` — tag users via `extendedTextMessage.contextInfo.mentionedJid`; recipient renders each `@<number>` in the body as a tappable handle and pings the mentioned user in groups
   - [ ] **M11.E.G** — carousel (`interactiveMessage.carouselMessage`): low-level API `sendCarousel` lands but each card needs an `imageMessage`/`videoMessage` header, which depends on the M8 media pipeline being wired into card construction
 - [x] **M12** — Pluggable storage backends (in-memory, file, SQLite)
   - [x] **M12.A** — file-backed libsignal `SessionStore` (sessions survive restart, no `NoSessionException`/retry-receipt churn for previously-paired peers)
