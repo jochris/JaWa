@@ -591,47 +591,121 @@ public final class JaWaClient implements AutoCloseable {
      *                          revoking your own
      * @param fromMe            {@code true} if the target message was sent by us
      */
+    /** Bundle of (mediaKey, encrypted, upload) for the per-type send helpers below. */
+    private record MediaUpload(
+        byte[] mediaKey,
+        id.jawa.media.MediaCrypto.EncryptedMedia enc,
+        id.jawa.media.MediaUploader.Result upload
+    ) {}
+
+    /**
+     * Encrypt + upload + bundle. The named send helpers (sendImage/Video/Audio/
+     * Document) build the type-specific {@code Wa.Message} on top of this.
+     */
+    private java.util.concurrent.CompletableFuture<MediaUpload> encryptAndUpload(
+            byte[] bytes,
+            id.jawa.media.MediaCrypto.MediaType type) {
+        byte[] mediaKey = id.jawa.util.Bytes.random(32);
+        id.jawa.media.MediaCrypto.EncryptedMedia enc =
+            id.jawa.media.MediaCrypto.encrypt(bytes, mediaKey, type);
+        return refreshMediaConn().thenCompose(mc -> {
+            try {
+                id.jawa.media.MediaUploader.Result up =
+                    id.jawa.media.MediaUploader.upload(mc, enc, type);
+                return java.util.concurrent.CompletableFuture.completedFuture(
+                    new MediaUpload(mediaKey, enc, up));
+            } catch (java.io.IOException | InterruptedException e) {
+                return java.util.concurrent.CompletableFuture.failedFuture(e);
+            }
+        });
+    }
+
+    private java.util.concurrent.CompletableFuture<String> sendBuiltMessage(
+            String chatJid, id.jawa.proto.Wa.Message msg) {
+        return chatJid.endsWith("@g.us")
+            ? sendGroupMessage(chatJid, msg)
+            : sendDmMessage(chatJid, msg);
+    }
+
     /**
      * Upload + send an image. Pipeline: encrypt {@code imageBytes} with a fresh random
      * media key, refresh the mediaConn auth, HTTPS POST the ciphertext to the media
      * server, build a {@code Wa.Message.imageMessage}, and ship it through
      * {@link #sendDmMessage} / {@link #sendGroupMessage} depending on {@code chatJid}.
-     *
-     * @param chatJid    recipient (DM bare JID or group {@code @g.us})
-     * @param imageBytes the raw image bytes (decoded — JaWa does not transcode)
-     * @param mimetype   IANA mimetype, e.g. {@code "image/jpeg"}
-     * @param caption    optional caption shown under the image; {@code null}/empty for none
-     * @return future resolving to the outbound message id
      */
     public java.util.concurrent.CompletableFuture<String> sendImage(
             String chatJid,
             byte[] imageBytes,
             String mimetype,
             String caption) {
-        byte[] mediaKey = id.jawa.util.Bytes.random(32);
-        id.jawa.media.MediaCrypto.EncryptedMedia enc =
-            id.jawa.media.MediaCrypto.encrypt(imageBytes, mediaKey, id.jawa.media.MediaCrypto.MediaType.IMAGE);
+        return encryptAndUpload(imageBytes, id.jawa.media.MediaCrypto.MediaType.IMAGE)
+            .thenCompose(u -> sendBuiltMessage(chatJid,
+                MessageEncoder.imageMessage(
+                    u.upload().url(), u.upload().directPath(),
+                    u.mediaKey(),
+                    u.enc().fileSha256(), u.enc().fileEncSha256(),
+                    imageBytes.length, mimetype, caption)));
+    }
 
-        return refreshMediaConn().thenCompose(mc -> {
-            id.jawa.media.MediaUploader.Result up;
-            try {
-                up = id.jawa.media.MediaUploader.upload(mc, enc, id.jawa.media.MediaCrypto.MediaType.IMAGE);
-            } catch (java.io.IOException | InterruptedException e) {
-                return java.util.concurrent.CompletableFuture.failedFuture(e);
-            }
-            id.jawa.proto.Wa.Message msg = MessageEncoder.imageMessage(
-                up.url(),
-                up.directPath(),
-                mediaKey,
-                enc.fileSha256(),
-                enc.fileEncSha256(),
-                imageBytes.length,
-                mimetype,
-                caption);
-            return chatJid.endsWith("@g.us")
-                ? sendGroupMessage(chatJid, msg)
-                : sendDmMessage(chatJid, msg);
-        });
+    /**
+     * Upload + send a video. Pass {@code 0} for unknown {@code seconds} / {@code width} /
+     * {@code height} — the proto fields stay unset and clients fall back to their own
+     * probing.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendVideo(
+            String chatJid,
+            byte[] videoBytes,
+            String mimetype,
+            String caption,
+            int seconds,
+            int width,
+            int height) {
+        return encryptAndUpload(videoBytes, id.jawa.media.MediaCrypto.MediaType.VIDEO)
+            .thenCompose(u -> sendBuiltMessage(chatJid,
+                MessageEncoder.videoMessage(
+                    u.upload().url(), u.upload().directPath(),
+                    u.mediaKey(),
+                    u.enc().fileSha256(), u.enc().fileEncSha256(),
+                    videoBytes.length, mimetype,
+                    caption, seconds, width, height)));
+    }
+
+    /**
+     * Upload + send an audio file. Set {@code ptt=true} for a voice note (the bubble
+     * with the play/waveform UI), {@code false} for a generic audio attachment.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendAudio(
+            String chatJid,
+            byte[] audioBytes,
+            String mimetype,
+            int seconds,
+            boolean ptt) {
+        return encryptAndUpload(audioBytes, id.jawa.media.MediaCrypto.MediaType.AUDIO)
+            .thenCompose(u -> sendBuiltMessage(chatJid,
+                MessageEncoder.audioMessage(
+                    u.upload().url(), u.upload().directPath(),
+                    u.mediaKey(),
+                    u.enc().fileSha256(), u.enc().fileEncSha256(),
+                    audioBytes.length, mimetype, seconds, ptt)));
+    }
+
+    /**
+     * Upload + send a document. {@code fileName} is what the recipient sees as the
+     * document label; {@code title} is an optional richer display title.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendDocument(
+            String chatJid,
+            byte[] documentBytes,
+            String mimetype,
+            String fileName,
+            String title) {
+        return encryptAndUpload(documentBytes, id.jawa.media.MediaCrypto.MediaType.DOCUMENT)
+            .thenCompose(u -> sendBuiltMessage(chatJid,
+                MessageEncoder.documentMessage(
+                    u.upload().url(), u.upload().directPath(),
+                    u.mediaKey(),
+                    u.enc().fileSha256(), u.enc().fileEncSha256(),
+                    documentBytes.length, mimetype, fileName, title)));
     }
 
     public java.util.concurrent.CompletableFuture<String> sendRevoke(

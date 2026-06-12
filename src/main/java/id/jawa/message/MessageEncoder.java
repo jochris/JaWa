@@ -52,6 +52,89 @@ public final class MessageEncoder {
     }
 
     /**
+     * Common skeleton shared by every media-message builder. Inlining instead of
+     * factoring out keeps each named helper readable as a single block.
+     */
+    private static com.google.protobuf.ByteString bs(byte[] b) {
+        return com.google.protobuf.ByteString.copyFrom(b);
+    }
+
+    /**
+     * Build a {@code videoMessage} pointing at a freshly-uploaded encrypted video.
+     *
+     * <p>Pass {@code 0} for unknown {@code seconds} / {@code width} / {@code height} —
+     * proto fields stay unset.
+     */
+    public static Wa.Message videoMessage(
+            String uploadedUrl, String directPath,
+            byte[] mediaKey, byte[] fileSha256, byte[] fileEncSha256,
+            long fileLength, String mimetype,
+            String caption, int seconds, int width, int height) {
+        Wa.Message.VideoMessage.Builder b = Wa.Message.VideoMessage.newBuilder()
+            .setUrl(uploadedUrl)
+            .setDirectPath(directPath)
+            .setMediaKey(bs(mediaKey))
+            .setFileSha256(bs(fileSha256))
+            .setFileEncSha256(bs(fileEncSha256))
+            .setFileLength(fileLength)
+            .setMimetype(mimetype)
+            .setMediaKeyTimestamp(System.currentTimeMillis() / 1000);
+        if (caption != null && !caption.isEmpty()) b.setCaption(caption);
+        if (seconds > 0) b.setSeconds(seconds);
+        if (width > 0)   b.setWidth(width);
+        if (height > 0)  b.setHeight(height);
+        return Wa.Message.newBuilder().setVideoMessage(b.build()).build();
+    }
+
+    /**
+     * Build an {@code audioMessage} pointing at a freshly-uploaded encrypted audio
+     * file. Set {@code ptt=true} for voice notes (push-to-talk), {@code false} for
+     * regular audio attachments.
+     */
+    public static Wa.Message audioMessage(
+            String uploadedUrl, String directPath,
+            byte[] mediaKey, byte[] fileSha256, byte[] fileEncSha256,
+            long fileLength, String mimetype,
+            int seconds, boolean ptt) {
+        Wa.Message.AudioMessage.Builder b = Wa.Message.AudioMessage.newBuilder()
+            .setUrl(uploadedUrl)
+            .setDirectPath(directPath)
+            .setMediaKey(bs(mediaKey))
+            .setFileSha256(bs(fileSha256))
+            .setFileEncSha256(bs(fileEncSha256))
+            .setFileLength(fileLength)
+            .setMimetype(mimetype)
+            .setPtt(ptt)
+            .setMediaKeyTimestamp(System.currentTimeMillis() / 1000);
+        if (seconds > 0) b.setSeconds(seconds);
+        return Wa.Message.newBuilder().setAudioMessage(b.build()).build();
+    }
+
+    /**
+     * Build a {@code documentMessage} pointing at a freshly-uploaded encrypted
+     * document. {@code fileName} shows up in the recipient's chat as the document
+     * label; {@code title} (optional) is a richer display title some clients render.
+     */
+    public static Wa.Message documentMessage(
+            String uploadedUrl, String directPath,
+            byte[] mediaKey, byte[] fileSha256, byte[] fileEncSha256,
+            long fileLength, String mimetype,
+            String fileName, String title) {
+        Wa.Message.DocumentMessage.Builder b = Wa.Message.DocumentMessage.newBuilder()
+            .setUrl(uploadedUrl)
+            .setDirectPath(directPath)
+            .setMediaKey(bs(mediaKey))
+            .setFileSha256(bs(fileSha256))
+            .setFileEncSha256(bs(fileEncSha256))
+            .setFileLength(fileLength)
+            .setMimetype(mimetype)
+            .setMediaKeyTimestamp(System.currentTimeMillis() / 1000);
+        if (fileName != null && !fileName.isEmpty()) b.setFileName(fileName);
+        if (title != null && !title.isEmpty())       b.setTitle(title);
+        return Wa.Message.newBuilder().setDocumentMessage(b.build()).build();
+    }
+
+    /**
      * Build an {@code imageMessage} pointing at a freshly-uploaded encrypted image.
      *
      * @param uploadedUrl    the {@code url} from the media upload response

@@ -131,6 +131,9 @@ the application JVM. Useful demo knobs: `jawa.session`, `jawa.phone`, `jawa.targ
     - [Revoke (Delete for Everyone)](#revoke-delete-for-everyone)
 - [Media](#media)
     - [Send Image](#send-image)
+    - [Send Video](#send-video)
+    - [Send Audio / Voice Note](#send-audio--voice-note)
+    - [Send Document](#send-document)
     - [Low-level Media APIs](#low-level-media-apis)
 - [Receiving Messages](#receiving-messages)
 - [WhatsApp IDs / JIDs Explained](#whatsapp-ids--jids-explained)
@@ -507,6 +510,47 @@ String msgId = client.sendImage(
 ).join();
 ```
 
+### Send Video
+
+```java
+byte[] mp4 = Files.readAllBytes(Path.of("clip.mp4"));
+client.sendVideo(
+    "120363...@g.us",
+    mp4,
+    "video/mp4",
+    "first JaWa video send",     // caption — nullable
+    /* seconds = */ 0,           // 0 if unknown — proto field stays unset
+    /* width   = */ 0,
+    /* height  = */ 0
+).join();
+```
+
+### Send Audio / Voice Note
+
+```java
+byte[] opus = Files.readAllBytes(Path.of("voice.ogg"));
+client.sendAudio(
+    "120363...@g.us",
+    opus,
+    "audio/ogg; codecs=opus",
+    /* seconds = */ 5,
+    /* ptt     = */ true         // true = voice-note bubble, false = regular audio
+).join();
+```
+
+### Send Document
+
+```java
+byte[] pdf = Files.readAllBytes(Path.of("invoice.pdf"));
+client.sendDocument(
+    "628xxx@s.whatsapp.net",
+    pdf,
+    "application/pdf",
+    "invoice.pdf",               // fileName — what the recipient sees as the label
+    "Invoice June 2026"          // title — optional richer display
+).join();
+```
+
 Under the hood:
 1. Generate a fresh random 32-byte `mediaKey`.
 2. `MediaCrypto.encrypt` — HKDF-expand the key into iv/cipherKey/macKey,
@@ -715,7 +759,7 @@ client.sendIqAsync(iq).thenAccept(response -> {
   - [x] **M8.B** — `<iq xmlns="w:m"><media_conn/></iq>` query + TTL-cached `MediaConn` record
   - [x] **M8.C** — HTTPS upload to `https://<host>/mms/<type>/<token>` via JDK HttpClient
   - [x] **M8.D** — `imageMessage` proto + `sendImage(chatJid, bytes, mimetype, caption)` API (DM + group)
-  - [ ] **M8.E** — video / audio / document send helpers (reuses M8.A-D crypto + upload)
+  - [x] **M8.E** — `videoMessage` / `audioMessage` / `documentMessage` proto builders + `sendVideo` / `sendAudio` / `sendDocument` APIs (all reuse the M8.A-D crypto + upload)
   - [ ] **M8.F** — receive-side `MediaDownloader` (HTTPS GET + retry + `MediaCrypto.decrypt`)
 - [ ] **M9** — App-state sync (LT-Hash, mutations, contact list, chat sync)
 - [ ] **M10** — Reconnect, error handling, ban detection
