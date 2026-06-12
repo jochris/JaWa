@@ -59,7 +59,25 @@ public final class MessageReceiver {
      *                    else {@code null} (e.g. media, reactions, system messages).
      */
     public record Decoded(String senderJid, String groupJid, String msgId, String encType,
-                          Wa.Message message, String text) {}
+                          Wa.Message message, String text, InteractiveResponse interactive) {}
+
+    /**
+     * Parsed interactive response — what the user tapped on a {@code buttonsMessage},
+     * {@code listMessage}, or {@code interactiveMessage} we previously sent.
+     *
+     * <p>{@link #kind} disambiguates the source:
+     * <ul>
+     *   <li>{@code "buttons"} — {@link #selectedId} = the tapped {@code buttonId}
+     *       (the {@code QuickReplyButton#buttonId} we set); {@link #displayText} = the
+     *       button's visible text echo.</li>
+     *   <li>{@code "list"} — {@link #selectedId} = the chosen {@code rowId}.</li>
+     *   <li>{@code "native_flow"} — {@link #selectedId} = the native-flow button name
+     *       (e.g. {@code "quick_reply"}, {@code "single_select"}); {@link #paramsJson}
+     *       carries the response payload (parse for the actual user-selected id).</li>
+     * </ul>
+     */
+    public record InteractiveResponse(String kind, String selectedId,
+                                      String paramsJson, String displayText) {}
 
     /**
      * Decode {@code messageStanza}. {@code signalStore} holds DM session state;
@@ -91,7 +109,7 @@ public final class MessageReceiver {
 
         BinaryNode enc = findEnc(messageStanza);
         if (enc == null) {
-            return new Decoded(senderJidStr, groupJid, msgId, null, null, null);
+            return new Decoded(senderJidStr, groupJid, msgId, null, null, null, null);
         }
 
         String encType = enc.attr("type");
@@ -155,11 +173,35 @@ public final class MessageReceiver {
             text = message.getExtendedTextMessage().getText();
         }
 
-        LOG.debug("Decoded {} from {}{} (encType={}, text={})",
+        InteractiveResponse interactive = parseInteractive(message);
+
+        LOG.debug("Decoded {} from {}{} (encType={}, text={}, interactive={})",
             msgId, senderJidStr,
             groupJid != null ? " in group " + groupJid : "",
-            encType, text != null ? "yes" : "no");
-        return new Decoded(senderJidStr, groupJid, msgId, encType, message, text);
+            encType, text != null ? "yes" : "no",
+            interactive != null ? interactive.kind() + "/" + interactive.selectedId() : "no");
+        return new Decoded(senderJidStr, groupJid, msgId, encType, message, text, interactive);
+    }
+
+    private static InteractiveResponse parseInteractive(Wa.Message message) {
+        if (message.hasButtonsResponseMessage()) {
+            var b = message.getButtonsResponseMessage();
+            return new InteractiveResponse("buttons",
+                b.getSelectedButtonId(), null, b.getSelectedDisplayText());
+        }
+        if (message.hasListResponseMessage()) {
+            var l = message.getListResponseMessage();
+            String rowId = l.hasSingleSelectReply() ? l.getSingleSelectReply().getSelectedRowId() : "";
+            return new InteractiveResponse("list", rowId, null, l.getTitle());
+        }
+        if (message.hasInteractiveResponseMessage()) {
+            var ir = message.getInteractiveResponseMessage();
+            String name = ir.hasNativeFlowResponseMessage() ? ir.getNativeFlowResponseMessage().getName() : "";
+            String params = ir.hasNativeFlowResponseMessage() ? ir.getNativeFlowResponseMessage().getParamsJson() : null;
+            String body = ir.hasBody() ? ir.getBody().getText() : null;
+            return new InteractiveResponse("native_flow", name, params, body);
+        }
+        return null;
     }
 
     private static void processSkdm(Wa.Message.SenderKeyDistributionMessage proto,

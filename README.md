@@ -822,13 +822,43 @@ Implement `Listener.onMessage(MessageReceiver.Decoded)`:
 
 ```java
 public record Decoded(
-    String senderJid,   // sender's device-specific JID (or participant for groups)
-    String groupJid,    // group JID for group messages, null for DMs
-    String msgId,       // <message id=> value
-    String encType,     // "pkmsg" | "msg" | "skmsg"
-    Wa.Message message, // decrypted, DSM-unwrapped Wa.Message protobuf
-    String text         // .conversation or .extendedTextMessage.text, else null
+    String senderJid,                   // sender's device-specific JID (or participant for groups)
+    String groupJid,                    // group JID for group messages, null for DMs
+    String msgId,                       // <message id=> value
+    String encType,                     // "pkmsg" | "msg" | "skmsg"
+    Wa.Message message,                 // decrypted, DSM-unwrapped Wa.Message protobuf
+    String text,                        // .conversation or .extendedTextMessage.text, else null
+    InteractiveResponse interactive     // populated when the user tapped a button/row, else null
 ) {}
+
+public record InteractiveResponse(
+    String kind,         // "buttons" | "list" | "native_flow"
+    String selectedId,   // buttonId / rowId / native-flow button name
+    String paramsJson,   // raw paramsJson for native_flow taps (parse for the user's id), else null
+    String displayText   // visible echo of what was tapped
+) {}
+```
+
+Quick dispatch from a bot:
+
+```java
+@Override public void onMessage(Decoded d) {
+    if (d.interactive() != null) {
+        var ir = d.interactive();
+        switch (ir.kind()) {
+            case "buttons" -> route(d.senderJid(), "button:" + ir.selectedId());
+            case "list"    -> route(d.senderJid(), "row:"    + ir.selectedId());
+            case "native_flow" -> {
+                // e.g. quick_reply → paramsJson = {"id":"qr_yes"}
+                route(d.senderJid(), "flow:" + ir.selectedId() + " " + ir.paramsJson());
+            }
+        }
+        return;
+    }
+    if (d.text() != null) {
+        route(d.senderJid(), d.text());
+    }
+}
 ```
 
 JaWa handles decrypt + ack + delivery receipt automatically. On decrypt failure,
