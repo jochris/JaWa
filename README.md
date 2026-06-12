@@ -139,6 +139,7 @@ the application JVM. Useful demo knobs: `jawa.session`, `jawa.phone`, `jawa.targ
     - [Send Video](#send-video)
     - [Send Audio / Voice Note](#send-audio--voice-note)
     - [Send Document](#send-document)
+    - [Send View-Once Media](#send-view-once-media)
     - [Download Received Media](#download-received-media)
     - [Low-level Media APIs](#low-level-media-apis)
 - [Receipts](#receipts)
@@ -739,6 +740,19 @@ var upload = MediaUploader.upload(mediaConn, enc, MediaCrypto.MediaType.VIDEO);
 client.sendGroupMessage(groupJid, customWaMessage).join();
 ```
 
+### Send View-Once Media
+
+Image / video / audio that the recipient can open exactly once before WhatsApp
+purges the media from their chat. Same upload pipeline as the regular `sendImage`
+/ `sendVideo` / `sendAudio`; the inner message is wrapped in
+`viewOnceMessageV2` (image / video) or `viewOnceMessageV2Extension` (audio).
+
+```java
+client.sendImageViewOnce(chatJid, jpeg, "image/jpeg", "look — once 👁️").join();
+client.sendVideoViewOnce(chatJid, mp4,  "video/mp4",  null, 0, 0, 0).join();
+client.sendAudioViewOnce(chatJid, opus, "audio/ogg; codecs=opus", 5, /* ptt = */ true).join();
+```
+
 ### Download Received Media
 
 `Wa.Message.imageMessage` (and the video / audio / document siblings) carries a
@@ -1038,6 +1052,7 @@ client.sendIqAsync(iq).thenAccept(response -> {
   - [x] **M11.E.C** — CTA buttons via `interactiveMessage.nativeFlowMessage`: `CtaButton.url`, `.copy`, `.call`, `.quickReply`, `.singleSelect` — confirmed rendering on regular accounts
   - [x] **M11.F** — `sendTextWithMentions` — tag users via `extendedTextMessage.contextInfo.mentionedJid`; recipient renders each `@<number>` in the body as a tappable handle and pings the mentioned user in groups
   - [x] **M11.E.D** — `sendPoll` — native poll bubble via `pollCreationMessageV3` (single-select) or `pollCreationMessage` V1 (multi); per-poll random 32-byte vote encryption key ridden in `messageContextInfo.messageSecret`
+  - [x] **M11.G** — view-once: `sendImageViewOnce` / `sendVideoViewOnce` / `sendAudioViewOnce` wrap the inner media in `viewOnceMessageV2` (image/video) or `viewOnceMessageV2Extension` (audio); receiver can open the media exactly once before it's purged
   - [ ] **M11.E.G** — carousel (`interactiveMessage.carouselMessage`): low-level API `sendCarousel` lands but each card needs an `imageMessage`/`videoMessage` header, which depends on the M8 media pipeline being wired into card construction
 - [x] **M12** — Pluggable storage backends (in-memory, file, SQLite)
   - [x] **M12.A** — file-backed libsignal `SessionStore` (sessions survive restart, no `NoSessionException`/retry-receipt churn for previously-paired peers)

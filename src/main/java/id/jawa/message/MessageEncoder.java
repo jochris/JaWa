@@ -52,6 +52,26 @@ public final class MessageEncoder {
     }
 
     /**
+     * Wrap {@code inner} as a view-once message ({@code viewOnceMessageV2}). Recipient
+     * sees the media exactly once before the server purges it from their chat history.
+     * Use {@link #viewOnceExtensionWrap} for {@code audioMessage} (different proto field).
+     */
+    public static Wa.Message viewOnceWrap(Wa.Message inner) {
+        return Wa.Message.newBuilder()
+            .setViewOnceMessageV2(Wa.Message.FutureProofMessage.newBuilder()
+                .setMessage(inner).build())
+            .build();
+    }
+
+    /** View-once wrapper specifically for {@code audioMessage} (uses {@code viewOnceMessageV2Extension}). */
+    public static Wa.Message viewOnceExtensionWrap(Wa.Message inner) {
+        return Wa.Message.newBuilder()
+            .setViewOnceMessageV2Extension(Wa.Message.FutureProofMessage.newBuilder()
+                .setMessage(inner).build())
+            .build();
+    }
+
+    /**
      * Build a poll. Selectable-count {@code 1} produces a single-select poll
      * ({@code pollCreationMessageV3}); higher values produce multi-select
      * ({@code pollCreationMessage}). Pass {@code 0} for "no upper bound" semantics

@@ -849,6 +849,53 @@ public final class JaWaClient implements AutoCloseable {
     }
 
     /**
+     * Send an image as view-once — recipient sees it exactly once before WhatsApp
+     * purges the media from their chat. Pipeline identical to {@link #sendImage};
+     * the resulting {@code imageMessage} is wrapped in {@code viewOnceMessageV2}.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendImageViewOnce(
+            String chatJid, byte[] imageBytes, String mimetype, String caption) {
+        return encryptAndUpload(imageBytes, id.jawa.media.MediaCrypto.MediaType.IMAGE)
+            .thenCompose(u -> {
+                id.jawa.proto.Wa.Message inner = MessageEncoder.imageMessage(
+                    u.upload().url(), u.upload().directPath(),
+                    u.mediaKey(),
+                    u.enc().fileSha256(), u.enc().fileEncSha256(),
+                    imageBytes.length, mimetype, caption);
+                return sendBuiltMessage(chatJid, MessageEncoder.viewOnceWrap(inner));
+            });
+    }
+
+    /** See {@link #sendImageViewOnce} — same wrap, applied to a video. */
+    public java.util.concurrent.CompletableFuture<String> sendVideoViewOnce(
+            String chatJid, byte[] videoBytes, String mimetype, String caption,
+            int seconds, int width, int height) {
+        return encryptAndUpload(videoBytes, id.jawa.media.MediaCrypto.MediaType.VIDEO)
+            .thenCompose(u -> {
+                id.jawa.proto.Wa.Message inner = MessageEncoder.videoMessage(
+                    u.upload().url(), u.upload().directPath(),
+                    u.mediaKey(),
+                    u.enc().fileSha256(), u.enc().fileEncSha256(),
+                    videoBytes.length, mimetype, caption, seconds, width, height);
+                return sendBuiltMessage(chatJid, MessageEncoder.viewOnceWrap(inner));
+            });
+    }
+
+    /** See {@link #sendImageViewOnce} — same idea but for audio (wrapped via {@code viewOnceMessageV2Extension}). */
+    public java.util.concurrent.CompletableFuture<String> sendAudioViewOnce(
+            String chatJid, byte[] audioBytes, String mimetype, int seconds, boolean ptt) {
+        return encryptAndUpload(audioBytes, id.jawa.media.MediaCrypto.MediaType.AUDIO)
+            .thenCompose(u -> {
+                id.jawa.proto.Wa.Message inner = MessageEncoder.audioMessage(
+                    u.upload().url(), u.upload().directPath(),
+                    u.mediaKey(),
+                    u.enc().fileSha256(), u.enc().fileEncSha256(),
+                    audioBytes.length, mimetype, seconds, ptt);
+                return sendBuiltMessage(chatJid, MessageEncoder.viewOnceExtensionWrap(inner));
+            });
+    }
+
+    /**
      * Upload + send a video. Pass {@code 0} for unknown {@code seconds} / {@code width} /
      * {@code height} — the proto fields stay unset and clients fall back to their own
      * probing.
