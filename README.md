@@ -476,6 +476,34 @@ client.sendPoll(
 > ({@code pollCreationMessage} V1). Receiver app renders proper radio /
 > checkbox UI accordingly.
 
+Decode incoming votes — a voter's `pollUpdateMessage` is end-to-end encrypted with
+a key derived from the original poll's `messageSecret`, so the bot has to remember
+the secret it sent the poll with:
+
+```java
+import id.jawa.message.PollDecoder;
+
+byte[] originalSecret = /* the messageSecret returned when building the poll */;
+List<String> originalOptions = List.of("Baileys", "whatsmeow", "JaWaaaa");
+
+@Override public void onMessage(Decoded d) {
+    var pm = d.message();
+    if (!pm.hasPollUpdateMessage()) return;
+    var vote = pm.getPollUpdateMessage().getVote();
+
+    List<String> picks = PollDecoder.decryptVote(
+        vote.getEncPayload().toByteArray(),
+        vote.getEncIv().toByteArray(),
+        originalSecret,
+        d.msgId(),                                          // poll's id (matches vote.pollCreationMessageKey.id)
+        myBareJid,                                          // bare JID of the poll author (us)
+        stripDevice(d.senderJid()),                         // bare JID of the voter
+        originalOptions
+    );
+    System.out.println(d.senderJid() + " voted: " + picks);
+}
+```
+
 ### Send Location
 
 Static map pin at the given coordinates. Optional `name` / `address` render as a
@@ -1118,6 +1146,7 @@ client.sendIqAsync(iq).thenAccept(response -> {
   - [x] **M11.E.C** — CTA buttons via `interactiveMessage.nativeFlowMessage`: `CtaButton.url`, `.copy`, `.call`, `.quickReply`, `.singleSelect` — confirmed rendering on regular accounts
   - [x] **M11.F** — `sendTextWithMentions` — tag users via `extendedTextMessage.contextInfo.mentionedJid`; recipient renders each `@<number>` in the body as a tappable handle and pings the mentioned user in groups
   - [x] **M11.E.D** — `sendPoll` — native poll bubble via `pollCreationMessageV3` (single-select) or `pollCreationMessage` V1 (multi); per-poll random 32-byte vote encryption key ridden in `messageContextInfo.messageSecret`
+  - [x] **M11.E.D.recv** — `PollDecoder.decryptVote` — HKDF-derived AES-256-GCM decrypt of an inbound `pollUpdateMessage.vote.encPayload`; matches the 32-byte SHA-256 hashes in the plaintext back to the original option names
   - [x] **M11.G** — view-once: `sendImageViewOnce` / `sendVideoViewOnce` / `sendAudioViewOnce` wrap the inner media in `viewOnceMessageV2` (image/video) or `viewOnceMessageV2Extension` (audio); receiver can open the media exactly once before it's purged
   - [x] **M11.H** — receive interactive responses: `Decoded.interactive` carries the parsed `buttonsResponseMessage` / `listResponseMessage` / `interactiveResponseMessage` so bots can react to button / row / native-flow taps
   - [x] **M11.I** — `sendLocation` (static map pin via `locationMessage`) + `sendContact` (vCard via `contactMessage`)
