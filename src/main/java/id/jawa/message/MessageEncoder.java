@@ -102,6 +102,142 @@ public final class MessageEncoder {
         return Wa.Message.newBuilder().setListMessage(b.build()).build();
     }
 
+    /**
+     * Call-to-action button on an {@code interactiveMessage.nativeFlowMessage}.
+     * Three variants exposed by {@link #url}, {@link #copy}, {@link #call} factories;
+     * use raw constructor only for protocol experimentation.
+     */
+    public record CtaButton(String name, String paramsJson) {
+        /** URL button — taps open {@code url} in the user's browser. */
+        public static CtaButton url(String displayText, String url) {
+            return new CtaButton("cta_url",
+                "{\"display_text\":\"" + escape(displayText)
+              + "\",\"url\":\"" + escape(url)
+              + "\",\"merchant_url\":\"" + escape(url) + "\"}");
+        }
+        /** Copy button — taps copy {@code copyCode} to clipboard. */
+        public static CtaButton copy(String displayText, String copyCode) {
+            return new CtaButton("cta_copy",
+                "{\"display_text\":\"" + escape(displayText)
+              + "\",\"copy_code\":\"" + escape(copyCode) + "\"}");
+        }
+        /** Call button — taps dial {@code phoneNumber}. Phone must be E.164 with leading +. */
+        public static CtaButton call(String displayText, String phoneNumber) {
+            return new CtaButton("cta_call",
+                "{\"display_text\":\"" + escape(displayText)
+              + "\",\"phone_number\":\"" + escape(phoneNumber) + "\"}");
+        }
+
+        /** Quick-reply button inside native flow — fires an inbound text with {@code id}. */
+        public static CtaButton quickReply(String displayText, String id) {
+            return new CtaButton("quick_reply",
+                "{\"display_text\":\"" + escape(displayText)
+              + "\",\"id\":\"" + escape(id) + "\"}");
+        }
+    }
+
+    /**
+     * One card inside a {@link #interactiveCarousel} bubble. Each card has its own
+     * body text + native-flow buttons; cards scroll horizontally on the receiver UI.
+     */
+    public record CarouselCard(String title, String body, String footer,
+                               java.util.List<CtaButton> buttons) {}
+
+    /**
+     * Build an {@code interactiveMessage.carouselMessage} — horizontally-scrollable
+     * cards, each with its own body + button set.
+     *
+     * <p><b>Note:</b> WhatsApp's app requires each card to carry an {@code imageMessage} /
+     * {@code videoMessage} / {@code productMessage} header to render — pure-text cards
+     * are silently dropped as "Unsupported message". Wiring an M8 media upload into the
+     * card header is open work; until then this builder produces a stanza the server
+     * accepts but the receiver app won't render.
+     */
+    public static Wa.Message interactiveCarousel(String body, String footer,
+                                                 java.util.List<CarouselCard> cards) {
+        Wa.Message.InteractiveMessage.CarouselMessage.Builder cm =
+            Wa.Message.InteractiveMessage.CarouselMessage.newBuilder()
+                .setMessageVersion(1);
+        for (CarouselCard card : cards) {
+            Wa.Message.InteractiveMessage.NativeFlowMessage.Builder nf =
+                Wa.Message.InteractiveMessage.NativeFlowMessage.newBuilder()
+                    .setMessageVersion(1);
+            for (CtaButton btn : card.buttons()) {
+                nf.addButtons(Wa.Message.InteractiveMessage.NativeFlowMessage.NativeFlowButton.newBuilder()
+                    .setName(btn.name())
+                    .setButtonParamsJson(btn.paramsJson())
+                    .build());
+            }
+            Wa.Message.InteractiveMessage.Builder cardMsg = Wa.Message.InteractiveMessage.newBuilder()
+                .setBody(Wa.Message.InteractiveMessage.Body.newBuilder()
+                    .setText(card.body() == null ? "" : card.body())
+                    .build())
+                .setNativeFlowMessage(nf.build());
+            if (card.title() != null && !card.title().isEmpty()) {
+                cardMsg.setHeader(Wa.Message.InteractiveMessage.Header.newBuilder()
+                    .setTitle(card.title())
+                    .build());
+            }
+            if (card.footer() != null && !card.footer().isEmpty()) {
+                cardMsg.setFooter(Wa.Message.InteractiveMessage.Footer.newBuilder()
+                    .setText(card.footer()).build());
+            }
+            cm.addCards(cardMsg.build());
+        }
+        Wa.Message.InteractiveMessage.Builder im = Wa.Message.InteractiveMessage.newBuilder()
+            .setCarouselMessage(cm.build());
+        if (body != null && !body.isEmpty()) {
+            im.setBody(Wa.Message.InteractiveMessage.Body.newBuilder().setText(body).build());
+        }
+        if (footer != null && !footer.isEmpty()) {
+            im.setFooter(Wa.Message.InteractiveMessage.Footer.newBuilder().setText(footer).build());
+        }
+        return Wa.Message.newBuilder().setInteractiveMessage(im.build()).build();
+    }
+
+    /**
+     * Build an {@code interactiveMessage} with native-flow CTA buttons (URL / copy /
+     * call). The {@code <biz>} stanza wrap added by {@link MessageSender} /
+     * {@link GroupSender} is what makes the receiver app actually render the buttons.
+     */
+    public static Wa.Message interactiveCtaButtons(String body, String footer,
+                                                   java.util.List<CtaButton> buttons) {
+        Wa.Message.InteractiveMessage.NativeFlowMessage.Builder nf =
+            Wa.Message.InteractiveMessage.NativeFlowMessage.newBuilder()
+                .setMessageVersion(1);
+        for (CtaButton b : buttons) {
+            nf.addButtons(Wa.Message.InteractiveMessage.NativeFlowMessage.NativeFlowButton.newBuilder()
+                .setName(b.name())
+                .setButtonParamsJson(b.paramsJson())
+                .build());
+        }
+        Wa.Message.InteractiveMessage.Builder im = Wa.Message.InteractiveMessage.newBuilder()
+            .setBody(Wa.Message.InteractiveMessage.Body.newBuilder().setText(body).build())
+            .setNativeFlowMessage(nf.build());
+        if (footer != null && !footer.isEmpty()) {
+            im.setFooter(Wa.Message.InteractiveMessage.Footer.newBuilder().setText(footer).build());
+        }
+        return Wa.Message.newBuilder().setInteractiveMessage(im.build()).build();
+    }
+
+    /** Minimal JSON string escape — handles the characters whatsapp's nativeFlow params can carry. */
+    private static String escape(String s) {
+        if (s == null) return "";
+        StringBuilder b = new StringBuilder(s.length() + 8);
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            switch (c) {
+                case '"'  -> b.append("\\\"");
+                case '\\' -> b.append("\\\\");
+                case '\n' -> b.append("\\n");
+                case '\r' -> b.append("\\r");
+                case '\t' -> b.append("\\t");
+                default   -> b.append(c);
+            }
+        }
+        return b.toString();
+    }
+
     /** Quick-reply button on a {@code buttonsMessage} — id is echoed back when tapped. */
     public record QuickReplyButton(String buttonId, String displayText) {}
 

@@ -637,6 +637,39 @@ public final class JaWaClient implements AutoCloseable {
     }
 
     /**
+     * Send an {@code interactiveMessage} with call-to-action buttons (URL / copy /
+     * call). Build the button list with {@link MessageEncoder.CtaButton#url},
+     * {@link MessageEncoder.CtaButton#copy}, {@link MessageEncoder.CtaButton#call}.
+     *
+     * <p>Routes DM vs group based on {@code chatJid} suffix.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendCtaButtons(
+            String chatJid,
+            String body,
+            String footer,
+            java.util.List<MessageEncoder.CtaButton> buttons) {
+        id.jawa.proto.Wa.Message msg = MessageEncoder.interactiveCtaButtons(body, footer, buttons);
+        return chatJid.endsWith("@g.us")
+            ? sendGroupMessage(chatJid, msg)
+            : sendDmMessage(chatJid, msg);
+    }
+
+    /**
+     * Send an {@code interactiveMessage.carouselMessage} — horizontally-scrollable
+     * cards, each with its own body and {@link MessageEncoder.CtaButton} set.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendCarousel(
+            String chatJid,
+            String body,
+            String footer,
+            java.util.List<MessageEncoder.CarouselCard> cards) {
+        id.jawa.proto.Wa.Message msg = MessageEncoder.interactiveCarousel(body, footer, cards);
+        return chatJid.endsWith("@g.us")
+            ? sendGroupMessage(chatJid, msg)
+            : sendDmMessage(chatJid, msg);
+    }
+
+    /**
      * Send a {@code buttonsMessage} — up to 3 quick-reply buttons rendered below
      * {@code body}. When tapped, the recipient gets a {@code buttonsResponseMessage}
      * with the matching {@code buttonId}.

@@ -71,6 +71,80 @@ public final class Main {
 
             @Override public void onConnected() {
                 System.out.println(">>> Connected");
+                // Optional: hardcoded interactive demos for live testing native flow types
+                // (-Djawa.demo_chat=<jid> -Djawa.demo=mixed_cta|carousel|single_select|send_location|address|quick_reply).
+                String demoChat = System.getProperty("jawa.demo_chat");
+                String demo = System.getProperty("jawa.demo");
+                if (demoChat != null && !demoChat.isBlank() && demo != null) {
+                    java.util.List<id.jawa.message.MessageEncoder.CtaButton> mix;
+                    switch (demo) {
+                        case "mixed_cta" -> {
+                            mix = java.util.List.of(
+                                id.jawa.message.MessageEncoder.CtaButton.url("🌐 Open repo", "https://github.com/jochris/JaWa"),
+                                id.jawa.message.MessageEncoder.CtaButton.copy("📋 Copy code", "JAWA-2026"),
+                                id.jawa.message.MessageEncoder.CtaButton.call("📞 Call WA", "+62895416602000"),
+                                id.jawa.message.MessageEncoder.CtaButton.quickReply("✨ Quick reply", "qr_hello")
+                            );
+                            client.sendCtaButtons(demoChat, "Mixed CTA demo 🚀", "JaWa v0.0.3", mix)
+                                .whenComplete((id, err) -> System.out.println(err != null ? ">>> err " + err : ">>> Sent mixed_cta id=" + id));
+                        }
+                        case "quick_reply" -> {
+                            mix = java.util.List.of(
+                                id.jawa.message.MessageEncoder.CtaButton.quickReply("✅ Confirm", "qr_yes"),
+                                id.jawa.message.MessageEncoder.CtaButton.quickReply("❌ Cancel",  "qr_no")
+                            );
+                            client.sendCtaButtons(demoChat, "Quick-reply via interactive", null, mix)
+                                .whenComplete((id, err) -> System.out.println(err != null ? ">>> err " + err : ">>> Sent quick_reply id=" + id));
+                        }
+                        case "carousel" -> {
+                            java.util.List<id.jawa.message.MessageEncoder.CarouselCard> cards = java.util.List.of(
+                                new id.jawa.message.MessageEncoder.CarouselCard("Card 1", "First card body", null, java.util.List.of(
+                                    id.jawa.message.MessageEncoder.CtaButton.url("🌐 Visit", "https://github.com/jochris/JaWa")
+                                )),
+                                new id.jawa.message.MessageEncoder.CarouselCard("Card 2", "Second card body", null, java.util.List.of(
+                                    id.jawa.message.MessageEncoder.CtaButton.copy("📋 Copy", "JAWA-CARD2")
+                                )),
+                                new id.jawa.message.MessageEncoder.CarouselCard("Card 3", "Third card body", null, java.util.List.of(
+                                    id.jawa.message.MessageEncoder.CtaButton.quickReply("⭐ Star", "qr_star")
+                                ))
+                            );
+                            client.sendCarousel(demoChat, null, null, cards)
+                                .whenComplete((id, err) -> System.out.println(err != null ? ">>> err " + err : ">>> Sent carousel id=" + id));
+                        }
+                        default -> System.err.println(">>> unknown demo: " + demo);
+                    }
+                    return;
+                }
+                // Optional: send CTA buttons (URL / copy / call) via interactiveMessage.
+                // _cta format: "url:label:value|copy:label:value|call:label:value"
+                String ctaChat = System.getProperty("jawa.cta_chat");
+                if (ctaChat != null && !ctaChat.isBlank()) {
+                    String body = System.getProperty("jawa.cta_body", "");
+                    String footer = System.getProperty("jawa.cta_footer", "");
+                    String spec = System.getProperty("jawa.cta", "");
+                    java.util.List<id.jawa.message.MessageEncoder.CtaButton> btns = new java.util.ArrayList<>();
+                    for (String pair : spec.split("\\|")) {
+                        if (pair.isBlank()) continue;
+                        String[] parts = pair.split(":", 3);
+                        if (parts.length != 3) continue;
+                        String kind = parts[0].trim().toLowerCase();
+                        String label = parts[1];
+                        String value = parts[2];
+                        btns.add(switch (kind) {
+                            case "url"  -> id.jawa.message.MessageEncoder.CtaButton.url(label, value);
+                            case "copy" -> id.jawa.message.MessageEncoder.CtaButton.copy(label, value);
+                            case "call" -> id.jawa.message.MessageEncoder.CtaButton.call(label, value);
+                            default     -> null;
+                        });
+                    }
+                    btns.removeIf(java.util.Objects::isNull);
+                    client.sendCtaButtons(ctaChat, body, footer.isEmpty() ? null : footer, btns)
+                        .whenComplete((msgId, err) -> {
+                            if (err != null) { System.err.println(">>> cta send failed: " + err); err.printStackTrace(); return; }
+                            System.out.println(">>> Sent cta id=" + msgId + " (" + btns.size() + " button(s))");
+                        });
+                    return;
+                }
                 // Optional: send a quick-reply buttons message
                 // (-Djawa.buttons_chat / _body / _footer / _buttons).
                 // _buttons format: "id1:label1|id2:label2|id3:label3" (max 3).

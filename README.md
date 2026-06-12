@@ -128,6 +128,7 @@ the application JVM. Useful demo knobs: `jawa.session`, `jawa.phone`, `jawa.targ
     - [Reaction](#reaction)
     - [Reply / Quote](#reply--quote)
     - [Edit Message](#edit-message)
+    - [CTA Buttons (URL / Copy / Call / Quick-Reply)](#cta-buttons-url--copy--call--quick-reply)
     - [Quick-Reply Buttons](#quick-reply-buttons)
     - [List Message](#list-message)
     - [Revoke (Delete for Everyone)](#revoke-delete-for-everyone)
@@ -476,6 +477,34 @@ String editId = client.sendEdit(
     "hello from jawa (edited)"
 ).join();
 ```
+
+### CTA Buttons (URL / Copy / Call / Quick-Reply)
+
+Modern call-to-action buttons via `interactiveMessage.nativeFlowMessage`. Up to
+three buttons render below the body; mix and match types freely. Receiver app
+needs the `<biz>` companion stanza (JaWa adds it automatically).
+
+```java
+import id.jawa.message.MessageEncoder.CtaButton;
+
+client.sendCtaButtons(
+    "628xxx@s.whatsapp.net",
+    "Pick an action:",                                  // body
+    "JaWa v0.0.3",                                      // footer — nullable
+    List.of(
+        CtaButton.url("🌐 Open repo", "https://github.com/jochris/JaWa"),
+        CtaButton.copy("📋 Copy code", "JAWA-2026"),
+        CtaButton.call("📞 Call WA", "+62895416602000"),
+        CtaButton.quickReply("✨ Hello", "qr_hello")    // fires inbound text "qr_hello"
+    )
+).join();
+```
+
+> [!NOTE]
+> `cta_url` opens the URL in the user's browser, `cta_copy` copies a code to
+> clipboard, `cta_call` dials the number, and `quick_reply` fires an inbound
+> text whose body is the `id` you set. All four are confirmed working on regular
+> (non-business) accounts as of June 2026.
 
 ### Quick-Reply Buttons
 
@@ -948,6 +977,8 @@ client.sendIqAsync(iq).thenAccept(response -> {
   - [x] **M11.E.A** — `sendListMessage` (dropdown of selectable rows, multi-section); receiver renders proper list sheet
   - [x] **M11.E.B** — `sendButtonsMessage` (quick-reply buttons, max 3); receiver renders proper button bubbles
   - [x] **M11.E.biz** — append `<biz>` stanza node alongside `<message>` when payload is buttons/list/interactive/template — without this the receiver app silently drops the interactive surface
+  - [x] **M11.E.C** — CTA buttons via `interactiveMessage.nativeFlowMessage`: `CtaButton.url`, `.copy`, `.call`, `.quickReply` — confirmed rendering on regular accounts
+  - [ ] **M11.E.G** — carousel (`interactiveMessage.carouselMessage`): low-level API `sendCarousel` lands but each card needs an `imageMessage`/`videoMessage` header, which depends on the M8 media pipeline being wired into card construction
 - [x] **M12** — Pluggable storage backends (in-memory, file, SQLite)
   - [x] **M12.A** — file-backed libsignal `SessionStore` (sessions survive restart, no `NoSessionException`/retry-receipt churn for previously-paired peers)
   - [x] **M12.B** — file-backed JaWa pre-key store (one-time pre-keys survive restart, re-mirrored into libsignal on connect)
