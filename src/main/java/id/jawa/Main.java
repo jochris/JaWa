@@ -71,6 +71,24 @@ public final class Main {
 
             @Override public void onConnected() {
                 System.out.println(">>> Connected");
+                // Optional: request an app-state sync (-Djawa.appstate=regular_low|regular_high|regular|critical_block|critical_unblock_low).
+                String appstate = System.getProperty("jawa.appstate");
+                if (appstate != null && !appstate.isBlank()) {
+                    id.jawa.appstate.PatchName name = id.jawa.appstate.PatchName.fromWire(appstate);
+                    if (name == null) { System.err.println(">>> unknown collection: " + appstate); return; }
+                    long fromVersion = Long.parseLong(System.getProperty("jawa.appstate_version", "-1"));
+                    client.requestAppStateSync(name, fromVersion).whenComplete((muts, err) -> {
+                        if (err != null) { System.err.println(">>> app-state sync failed: " + err); err.printStackTrace(); return; }
+                        System.out.println(">>> App-state " + name.wire + ": " + muts.size() + " mutation(s) decoded");
+                        for (int i = 0; i < Math.min(muts.size(), 10); i++) {
+                            var m = muts.get(i);
+                            System.out.println("    [" + i + "] op=" + m.operation()
+                                + " ts=" + m.action().getValue().getTimestamp()
+                                + " action=" + m.action().getValue().toString().replaceAll("\\s+", " ").trim());
+                        }
+                    });
+                    return;
+                }
                 // Optional: send a static location pin (-Djawa.loc_chat / _lat / _lng / _name / _address).
                 String locChat = System.getProperty("jawa.loc_chat");
                 if (locChat != null && !locChat.isBlank()) {

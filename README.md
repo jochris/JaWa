@@ -1183,7 +1183,16 @@ client.sendIqAsync(iq).thenAccept(response -> {
   - [x] **M8.D** — `imageMessage` proto + `sendImage(chatJid, bytes, mimetype, caption)` API (DM + group)
   - [x] **M8.E** — `videoMessage` / `audioMessage` / `documentMessage` proto builders + `sendVideo` / `sendAudio` / `sendDocument` APIs (all reuse the M8.A-D crypto + upload)
   - [x] **M8.F** — receive-side `MediaDownloader` (URL or directPath via mediaConn host fan-out, envelope SHA-256 check, MAC verify, AES-CBC decrypt) + `JaWaClient.downloadMedia` async API
-- [ ] **M9** — App-state sync (LT-Hash, mutations, contact list, chat sync)
+- [x] **M9** — App-state sync (LT-Hash, mutations, contact list, chat sync)
+  - [x] `id.jawa.appstate.LtHash` — pointwise summing 128-byte state, add / subtract digest pairs via HKDF-expanded 64-byte chunks; the `WhatsApp Patch Integrity` instance is what verifies a collection's mutations agree with the server's view (4 unit tests)
+  - [x] `AppStateKey` + `Expanded` — 32-byte shared key + HKDF-SHA256 expansion into the 5 sub-keys (index / valueEnc / valueMAC / snapshotMAC / patchMAC)
+  - [x] `PatchName` enum — every WhatsApp collection (`critical_block`, `critical_unblock_low`, `regular_low`, `regular_high`, `regular`)
+  - [x] `FileAppStateKeyStorage` — per-key file under `<signalDir>/appstate-keys/`, atomic write-through. Companion devices only receive these once on first online; persistence is non-optional.
+  - [x] **Inbound capture** — `JaWaClient.captureAppStateKeysFrom` watches every decoded inbound message for a `protocolMessage.appStateSyncKeyShare` and persists each key. Fires `Listener.onAppStateKeysReceived(count)`.
+  - [x] `AppStateSyncQuery.buildSnapshotRequest` / `buildPatchRequest` — `<iq xmlns="w:sync:app:state" type="set"><sync><collection name=... return_snapshot=... version=.../></sync></iq>`; `parseResponse` returns `PatchList(name, hasMore, snapshot, patches, externalSnapshot)`.
+  - [x] `AppStateProcessor.decode(SyncdMutation)` — pulls the matching key from storage, splits the value blob into iv + ciphertext + valueMAC, optionally verifies the MAC (HMAC-SHA512[:32] over `op || keyId || ct || keyIdLen`), AES-CBC decrypts, and unmarshals into `Wa.SyncActionData`. `decodeSnapshot` / `decodePatch` iterate the corresponding container.
+  - [x] `JaWaClient.requestAppStateSync(PatchName, fromVersion)` — fires the IQ, decodes the response end-to-end, dispatches `Listener.onAppStateMutations(name, mutations)`.
+  - [ ] **Open follow-up:** auto-request missing keys via `protocolMessage.appStateSyncKeyRequest` when a sync surfaces a key id we don't have; download external snapshot blobs via mediaConn; persist per-collection LT-Hash state to feed back into the IQ. Until then, freshly-paired devices may surface "missing app-state key id=..." warnings on the first sync until the primary phone shares the keys naturally.
 - [x] **M10** — Reconnect, error handling, ban detection
   - [x] **M10.A** — auto-reconnect on unexpected WS close with exponential back-off (2s → 60s cap); `<failure>` stanzas (e.g. `reason=401`) flag the session terminal so a revoked device doesn't loop forever. `client.autoReconnect(false)` opts out.
   - [x] **M10.B** — categorised `Listener.onTerminated(TerminationReason, detail, permanent)`: `REVOKED` (401), `BANNED` (403/co_block), `VERSION_OBSOLETE` (405), `REPLACED` (`<stream:error><conflict type="replaced"/>`), `TRANSIENT` (5xx, generic stream:error), `UNKNOWN`. Permanent reasons suppress auto-reconnect; transient ones let the back-off ladder keep trying.

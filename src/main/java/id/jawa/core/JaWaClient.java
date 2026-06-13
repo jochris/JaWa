@@ -87,6 +87,22 @@ public final class JaWaClient implements AutoCloseable {
         default void onReceipt(id.jawa.message.Receipt receipt) {}
 
         /**
+         * Fired once when the primary phone has shared a fresh batch of app-state keys.
+         * After this fires, {@link #requestAppStateSync} can actually decrypt patches.
+         */
+        default void onAppStateKeysReceived(int count) {}
+
+        /**
+         * Fired with every batch of decoded app-state mutations returned by
+         * {@link #requestAppStateSync}. Each {@link id.jawa.appstate.AppStateProcessor.Mutation}
+         * carries a {@link id.jawa.proto.Wa.SyncActionData} whose nested {@code value}
+         * names the actual action (contact / pin / archive / mute / etc.); consumers
+         * project the ones they care about.
+         */
+        default void onAppStateMutations(id.jawa.appstate.PatchName name,
+                                         java.util.List<id.jawa.appstate.AppStateProcessor.Mutation> mutations) {}
+
+        /**
          * Server has signalled the session can no longer continue (revoked device,
          * banned account, version obsolete, etc.). Fires once before the underlying
          * connection is torn down; consumers should clean up any per-session state.
@@ -111,6 +127,8 @@ public final class JaWaClient implements AutoCloseable {
     private id.jawa.signal.FileSessionStorage sessionStorage; // built once when connecting if signalDir is set
     private id.jawa.signal.FilePreKeyStorage preKeyStorage;   // ditto
     private id.jawa.signal.FileSenderKeyStorage senderKeyStorage; // ditto
+    private id.jawa.appstate.FileAppStateKeyStorage appStateKeyStorage; // ditto
+    private id.jawa.appstate.AppStateProcessor appStateProcessor;
     private JaWaProtocolStore protocolStore;  // initialised in connect() once creds are loaded
     private PairingCodeHandler pairCodeHandler; // populated on demand for pair-code flow
     private java.util.concurrent.ScheduledExecutorService keepalive;
@@ -223,11 +241,13 @@ public final class JaWaClient implements AutoCloseable {
 
         transport = noise.finish();
         if (signalDir != null && sessionStorage == null) {
-            sessionStorage   = new id.jawa.signal.FileSessionStorage(signalDir.resolve("sessions"));
-            preKeyStorage    = new id.jawa.signal.FilePreKeyStorage(signalDir.resolve("prekeys"));
-            senderKeyStorage = new id.jawa.signal.FileSenderKeyStorage(signalDir.resolve("sender-keys"));
-            signalStore      = new InMemorySignalKeyStore(preKeyStorage);
-            senderKeyStore   = new id.jawa.signal.InMemorySenderKeyStore(senderKeyStorage);
+            sessionStorage     = new id.jawa.signal.FileSessionStorage(signalDir.resolve("sessions"));
+            preKeyStorage      = new id.jawa.signal.FilePreKeyStorage(signalDir.resolve("prekeys"));
+            senderKeyStorage   = new id.jawa.signal.FileSenderKeyStorage(signalDir.resolve("sender-keys"));
+            appStateKeyStorage = new id.jawa.appstate.FileAppStateKeyStorage(signalDir.resolve("appstate-keys"));
+            signalStore        = new InMemorySignalKeyStore(preKeyStorage);
+            senderKeyStore     = new id.jawa.signal.InMemorySenderKeyStore(senderKeyStorage);
+            appStateProcessor  = new id.jawa.appstate.AppStateProcessor(appStateKeyStorage);
         }
         protocolStore = new JaWaProtocolStore(creds, sessionStorage);
         // Re-mirror any persisted pre-keys into libsignal's protocolStore so inbound
@@ -347,6 +367,83 @@ public final class JaWaClient implements AutoCloseable {
      * call {@link #connect()} again. Same creds, same listener, same persistent Signal
      * state — peers shouldn't notice the gap.
      */
+    /**
+     * Watch every decoded inbound message for a {@code protocolMessage.appStateSyncKeyShare}
+     * — the primary phone ships these once when our companion device first comes online,
+     * and they're not re-sent on demand. Persisting them as soon as they arrive is how
+     * we participate in app-state sync at all.
+     */
+    private void captureAppStateKeysFrom(id.jawa.message.MessageReceiver.Decoded decoded) {
+        if (appStateKeyStorage == null || decoded.message() == null) return;
+        if (!decoded.message().hasProtocolMessage()) return;
+        var pm = decoded.message().getProtocolMessage();
+        if (!pm.hasAppStateSyncKeyShare()) return;
+        int count = 0;
+        for (id.jawa.proto.Wa.Message.AppStateSyncKey k : pm.getAppStateSyncKeyShare().getKeysList()) {
+            byte[] id = k.getKeyId().getKeyId().toByteArray();
+            byte[] data = k.getKeyData().getKeyData().toByteArray();
+            if (data.length != 32) continue;
+            appStateKeyStorage.put(new id.jawa.appstate.AppStateKey(id, data));
+            count++;
+        }
+        if (count > 0) {
+            LOG.info("Persisted {} app-state key(s) shared by {}", count, decoded.senderJid());
+            try { listener.onAppStateKeysReceived(count); }
+            catch (Throwable t) { LOG.warn("listener.onAppStateKeysReceived threw", t); }
+        }
+    }
+
+    /**
+     * Request a snapshot or incremental patch list from {@code w:sync:app:state} and
+     * decode every mutation in the response via {@link id.jawa.appstate.AppStateProcessor}.
+     *
+     * @param name        which collection to sync ({@code regular_low} = chat
+     *                    archive state, {@code critical_unblock_low} = contacts, etc.)
+     * @param fromVersion {@code -1} for a fresh snapshot (typical first sync);
+     *                    otherwise an existing version to fetch patches since
+     * @return future resolving to every decoded mutation; empty list when nothing
+     *         to apply or when the IQ failed (logged)
+     */
+    public java.util.concurrent.CompletableFuture<java.util.List<id.jawa.appstate.AppStateProcessor.Mutation>>
+            requestAppStateSync(id.jawa.appstate.PatchName name, long fromVersion) {
+        if (appStateProcessor == null) {
+            return java.util.concurrent.CompletableFuture.failedFuture(
+                new IllegalStateException("signalDir not set — app-state sync requires persistent storage"));
+        }
+        String iqId = newIqId();
+        BinaryNode iq = fromVersion < 0
+            ? id.jawa.appstate.AppStateSyncQuery.buildSnapshotRequest(iqId, name)
+            : id.jawa.appstate.AppStateSyncQuery.buildPatchRequest(iqId, name, fromVersion);
+        LOG.debug("Sent app-state sync IQ id={} name={} from={}", iqId, name.wire, fromVersion);
+        return sendIqAsync(iq).thenApply(resp -> {
+            if ("error".equals(resp.attr("type"))) {
+                LOG.warn("App-state sync rejected: {}", resp);
+                return java.util.List.<id.jawa.appstate.AppStateProcessor.Mutation>of();
+            }
+            id.jawa.appstate.AppStateSyncQuery.PatchList list =
+                id.jawa.appstate.AppStateSyncQuery.parseResponse(resp);
+            if (list == null) return java.util.List.<id.jawa.appstate.AppStateProcessor.Mutation>of();
+
+            java.util.List<id.jawa.appstate.AppStateProcessor.Mutation> all = new java.util.ArrayList<>();
+            if (list.snapshot() != null) {
+                all.addAll(appStateProcessor.decodeSnapshot(list.snapshot(), false));
+            }
+            for (id.jawa.proto.Wa.SyncdPatch p : list.patches()) {
+                all.addAll(appStateProcessor.decodePatch(p, false));
+            }
+            LOG.info("App-state sync {}: {} snapshot record(s) + {} patch(es) -> {} mutation(s) decoded",
+                name.wire,
+                list.snapshot() == null ? 0 : list.snapshot().getRecordsCount(),
+                list.patches().size(),
+                all.size());
+            if (!all.isEmpty()) {
+                try { listener.onAppStateMutations(name, all); }
+                catch (Throwable t) { LOG.warn("listener.onAppStateMutations threw", t); }
+            }
+            return all;
+        });
+    }
+
     private void handleFailure(BinaryNode node) {
         String reason = node.attr("reason", "");
         String location = node.attr("location", "");
@@ -1522,6 +1619,7 @@ public final class JaWaClient implements AutoCloseable {
         try {
             id.jawa.message.MessageReceiver.Decoded decoded =
                 id.jawa.message.MessageReceiver.decode(message, protocolStore, senderKeyStore);
+            captureAppStateKeysFrom(decoded);
             try { listener.onMessage(decoded); }
             catch (Throwable t) { LOG.warn("listener.onMessage threw", t); }
             sendAck(message);
