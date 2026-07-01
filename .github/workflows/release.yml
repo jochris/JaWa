@@ -24,9 +24,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          VERSION=$(grep -oP 'version = "\K[^"]+' build.gradle.kts | head -1)
+          VERSION=$(grep -oP '^\s*<version>\K[^<]+' pom.xml | head -1)
           if [[ -z "$VERSION" ]]; then
-            echo "::error::no version line found in build.gradle.kts"; exit 1
+            echo "::error::no version line found in pom.xml"; exit 1
           fi
           if [[ "$VERSION" == *SNAPSHOT* ]]; then
             echo "version $VERSION is SNAPSHOT — skip release"; exit 0

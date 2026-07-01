@@ -29,25 +29,17 @@ jobs:
         with:
           distribution: temurin
           java-version: ${{ matrix.java }}
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
-
-      - name: Validate Gradle wrapper
-        uses: gradle/actions/wrapper-validation@v4
+          cache: maven
 
       - name: Build & test
-        run: ./gradlew --no-daemon build
+        run: mvn clean test
 
       - name: Upload test report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-report-jdk${{ matrix.java }}-${{ matrix.os }}
-          path: |
-            build/reports/tests/test
-            build/test-results/test
+          path: target/surefire-reports
           if-no-files-found: ignore
           retention-days: 14
+
