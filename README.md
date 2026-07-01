@@ -36,7 +36,7 @@ messaging, no stalkerware, no spam.
 # Stack
 
 - **JDK 21** (records, sealed classes, virtual threads, pattern matching)
-- **Gradle** (Kotlin DSL)
+- **Maven**
 - **BouncyCastle** — Curve25519 ECDH, AES-GCM, HKDF-SHA256, HMAC
 - **signal-protocol-java** — XEdDSA sign/verify, X3DH, Double Ratchet, Sender Keys
 - **protobuf-java** (pinned to `3.10.0` — see Gotchas)
@@ -65,19 +65,6 @@ id.jawa.util      — JID, base64url, hex, crypto helpers
 JaWa is published via [JitPack](https://jitpack.io). Every non-SNAPSHOT `version` bump on
 `main` auto-creates a matching git tag + GitHub Release; JitPack resolves the tag on demand.
 
-**Gradle (Kotlin DSL):**
-
-```kotlin
-repositories {
-    mavenCentral()
-    maven("https://jitpack.io")
-}
-
-dependencies {
-    implementation("com.github.jochris:JaWa:v0.0.2")
-}
-```
-
 **Maven:**
 
 ```xml
@@ -89,25 +76,25 @@ dependencies {
 <dependency>
     <groupId>com.github.jochris</groupId>
     <artifactId>JaWa</artifactId>
-    <version>v0.0.2</version>
+    <version>v0.0.3</version>
 </dependency>
 ```
 
 > [!NOTE]
-> `logback-classic` is `runtimeOnly` in JaWa's build. Supply your own SLF4J binding
+> `logback-classic` is `runtime` scope in JaWa's build. Supply your own SLF4J binding
 > (logback, log4j-slf4j, etc.) in the consumer project.
 
 # Try the demo
 
 ```sh
 # QR pairing
-./gradlew run -PsessionFile=sessions/myphone.session --console=plain
+mvn exec:java -Djawa.session=sessions/myphone.session
 
 # Phone-number pairing code (preferred when testing)
-./gradlew run -PsessionFile=sessions/myphone.session -Djawa.phone=628xxxxxxxxx --console=plain
+mvn exec:java -Djawa.session=sessions/myphone.session -Djawa.phone=628xxxxxxxxx
 ```
 
-`build.gradle.kts` forwards every `-Djawa.*` system property on the Gradle CLI through to
+Maven automatically forwards all `-Djawa.*` system properties set on the Maven CLI through to
 the application JVM. Useful demo knobs: `jawa.session`, `jawa.phone`, `jawa.target`,
 `jawa.text`, `jawa.target_group`, `jawa.list_groups`.
 
@@ -1131,7 +1118,7 @@ client.sendIqAsync(iq).thenAccept(response -> {
 
 ## Status — what works today
 
-- [x] **M0** — Gradle skeleton, JDK 21 toolchain, full dep graph
+- [x] **M0** — Maven skeleton, JDK 21 toolchain, full dep graph
 - [x] **M1** — Binary Node codec (encode/decode, 4 JID variants, packed nibble/hex, token dictionary) — 19 unit tests
 - [x] **M2** — Noise XX handshake + WebSocket transport, server CertChain validation
 - [x] **M3** — ClientPayload (register + login)
@@ -1222,7 +1209,7 @@ client.sendIqAsync(iq).thenAccept(response -> {
 
 ## Contributing
 
-Issues / PRs / architectural feedback welcome. Run `./gradlew build` before
+Issues / PRs / architectural feedback welcome. Run `mvn clean test` before
 submitting; CI will block merges with failing tests.
 
 If you're porting a protocol feature, **always read the upstream first**. Baileys
