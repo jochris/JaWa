@@ -62,21 +62,15 @@ id.jawa.util      — JID, base64url, hex, crypto helpers
 
 # Install
 
-JaWa is published via [JitPack](https://jitpack.io). Every non-SNAPSHOT `version` bump on
-`main` auto-creates a matching git tag + GitHub Release; JitPack resolves the tag on demand.
+JaWa is published on Maven Central.
 
 **Maven:**
 
 ```xml
-<repository>
-    <id>jitpack.io</id>
-    <url>https://jitpack.io</url>
-</repository>
-
 <dependency>
-    <groupId>com.github.jochris</groupId>
+    <groupId>io.github.jochris</groupId>
     <artifactId>JaWa</artifactId>
-    <version>v0.0.3</version>
+    <version>0.0.3</version>
 </dependency>
 ```
 
