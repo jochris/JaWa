@@ -23,7 +23,7 @@ tasks.named<JavaExec>("run") {
 }
 
 group = "id.jawa"
-version = "0.0.3-SNAPSHOT"
+version = "0.0.3"
 
 java {
     toolchain {
