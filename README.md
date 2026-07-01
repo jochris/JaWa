@@ -377,11 +377,7 @@ public class EchoBot {
                         ? d.groupJid()
                         : stripDevice(d.senderJid());
                     String reply = "echo: " + d.text();
-                    if (d.groupJid() != null) {
-                        client.sendGroupText(to, reply);
-                    } else {
-                        client.sendText(to, reply);
-                    }
+                    client.sendText(to, reply);
                 });
             }
         });
@@ -407,44 +403,25 @@ dispatch, config file, and ping/menu/exec commands.
 All send APIs return a `CompletableFuture<String>` resolving to the outbound message
 id (uppercase hex).
 
-### Text Message (DM)
+### Text Message
+
+The same `sendText` method automatically routes to either a 1-on-1 DM or a group chat depending on the JID suffix:
 
 ```java
-// toUser must be a bare JID (no device suffix).
-String msgId = client.sendText("628xxxxxxxxx@s.whatsapp.net", "hello from JaWa").join();
-System.out.println("sent id=" + msgId);
+// Send a DM (toUser must be a bare JID, no device suffix)
+String dmId = client.sendText("628xxxxxxxxx@s.whatsapp.net", "hello from JaWa").join();
+
+// Send to a Group
+String groupId = client.sendText("120363xxxxxxxxxxxx@g.us", "halo grup").join();
 ```
 
 What happens under the hood:
-1. **USync** query for the recipient's device list (`client.queryDevices` is reused).
-2. **Pre-key bundle fetch** for any device we don't yet have a Signal session with.
-3. **`SessionBuilder`** (libsignal X3DH) installs sessions for each device.
-4. **Per-device encrypt** via `SessionCipher` → one `<enc>` per device.
-5. **DSM (`DeviceSentMessage`) wrap** + fan-out to your own companion devices so the
-   message appears in your own chat history (M5.D.1 + M5.D.2).
-
-### Text Message (Group)
-
-```java
-String groupJid = "120363xxxxxxxxxxxx@g.us";
-String msgId = client.sendGroupText(groupJid, "halo grup").join();
-```
-
-Group send is a Sender Keys protocol:
-- Plain text is encrypted **once** with a `GroupCipher` keyed by your sender-key for
-  the group → single `<enc type="skmsg">`.
-- Your `SenderKeyDistributionMessage` (SKDM) is wrapped in a regular `Wa.Message` and
-  encrypted **per-participant-device** with `SessionCipher` (one `<enc type="pkmsg|msg">`
-  each) inside `<participants>`.
-- Members that don't yet have your sender-key process the SKDM to derive the key for
-  subsequent `skmsg` traffic.
+* **For DMs**: Resolves target devices (USync), fetches pre-key bundles (X3DH), installs Signal sessions, and encrypts per-device (with DSM wrap for own companion devices).
+* **For Groups**: Uses the Sender Keys protocol (encrypts the text once with `GroupCipher` and distributes the `SenderKeyDistributionMessage` per-participant-device using `SessionCipher`).
 
 ### Send Arbitrary `Wa.Message`
 
-`sendText` / `sendGroupText` are thin wrappers over the lower-level
-`sendDmMessage` / `sendGroupMessage` overloads that accept any `Wa.Message` protobuf
-directly. The reaction / reply / edit / revoke helpers below use these internally;
-they're also useful for proto types JaWa doesn't yet expose a named helper for.
+If you need to send custom protobuf objects (e.g. stickers, contact cards, or raw fields that JaWa doesn't expose via named helpers), use the unified `sendMessage` method:
 
 ```java
 import id.jawa.proto.Wa;
@@ -454,9 +431,11 @@ Wa.Message custom = Wa.Message.newBuilder()
         .setText("**bold** isn't a thing, but extendedText carries metadata"))
     .build();
 
-client.sendDmMessage("628xxx@s.whatsapp.net", custom).join();
-client.sendGroupMessage("120363...@g.us", custom).join();
+// Automatically routes to group or DM based on the JID suffix
+client.sendMessage("628xxx@s.whatsapp.net", custom).join();
+client.sendMessage("120363...@g.us", custom).join();
 ```
+
 
 ## Modify Messages
 
@@ -829,10 +808,8 @@ Under the hood:
    the auth token + host list (cached until TTL expires).
 4. `MediaUploader.upload` — HTTPS POST `<ciphertext>||<mac10>` to
    `https://<host>/mms/image/<token>?auth=...&token=...`.
-5. Build `Wa.Message{imageMessage{url, directPath, mediaKey, fileSha256,
-   fileEncSha256, fileLength, mimetype, caption}}`.
-6. Route through `sendDmMessage` / `sendGroupMessage` — Signal-encrypted per
-   recipient device, same pipeline as text.
+5. Build `Wa.Message{imageMessage{url, directPath, mediaKey, fileSha256, fileEncSha256, fileLength, mimetype, caption}}`.
+6. Route through `sendMessage` — Signal-encrypted per recipient device, same pipeline as text.
 
 ### Low-level Media APIs
 
@@ -852,7 +829,7 @@ var upload = MediaUploader.upload(mediaConn, enc, MediaCrypto.MediaType.VIDEO);
 
 // Build your own Wa.Message.VideoMessage with upload.url() + upload.directPath(),
 // mediaKey, enc.fileSha256(), enc.fileEncSha256(), etc., then:
-client.sendGroupMessage(groupJid, customWaMessage).join();
+client.sendMessage(groupJid, customWaMessage).join();
 ```
 
 ### Send View-Once Media
@@ -1003,9 +980,8 @@ JaWa exposes `id.jawa.util.Jid` for parsing.
 | `[number]@lid` / `[number]:[device]@lid`| Linked-ID (LID, alternate identity space) |
 | `status@broadcast`                      | Status / stories                          |
 
-- `client.sendText(...)` expects a **bare** DM JID (no `:device` suffix). Strip it
-  with `Jid.parse(s).bare()` or the inline helper from the echo bot above.
-- `client.sendGroupText(...)` expects a `@g.us` JID.
+- `client.sendText(...)` automatically routes to either a DM or a group depending on whether the JID ends with `@g.us`. For DMs, it expects a **bare** JID (no `:device` suffix). Strip it with `Jid.parse(s).bare()`.
+
 
 ## User & Device Queries
 

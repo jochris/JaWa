@@ -600,9 +600,24 @@ public final class JaWaClient implements AutoCloseable {
      * insert the outgoing message into their local chat history. Without it, the message
      * reaches the recipient but the sender's own phone shows no record of it.
      */
-    public java.util.concurrent.CompletableFuture<String> sendText(String toUser, String text) {
-        return sendDmMessage(toUser, MessageEncoder.text(text));
+    /**
+     * Send any {@link id.jawa.proto.Wa.Message} to a chat (DM or group).
+     * Routes automatically depending on the JID suffix ({@code @g.us} is sent via group protocol, otherwise DM).
+     */
+    public java.util.concurrent.CompletableFuture<String> sendMessage(String chatJid, id.jawa.proto.Wa.Message msg) {
+        return chatJid.endsWith("@g.us")
+            ? sendGroupMessage(chatJid, msg)
+            : sendDmMessage(chatJid, msg);
     }
+
+    /**
+     * Send a plain text message to a user or a group.
+     * Routes automatically depending on the JID suffix.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendText(String chatJid, String text) {
+        return sendMessage(chatJid, MessageEncoder.text(text));
+    }
+
 
     /**
      * Send a text that tags one or more users. The {@code text} must contain
