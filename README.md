@@ -372,25 +372,14 @@ public class EchoBot {
             @Override public void onMessage(Decoded d) {
                 if (d.text() == null) return;                  // skip non-text
                 Thread.startVirtualThread(() -> {
-                    // Reply target: group if present, else bare DM JID.
-                    String to = d.groupJid() != null
-                        ? d.groupJid()
-                        : stripDevice(d.senderJid());
                     String reply = "echo: " + d.text();
-                    client.sendText(to, reply);
+                    client.sendText(d, reply);                 // Automatically routes and replies back to sender/group
                 });
             }
         });
 
         client.connect();
         client.join();
-    }
-
-    /** "628xxx:7@s.whatsapp.net" → "628xxx@s.whatsapp.net". */
-    static String stripDevice(String jid) {
-        int at = jid.indexOf('@'), colon = jid.indexOf(':');
-        return (colon < 0 || colon > at) ? jid
-            : jid.substring(0, colon) + jid.substring(at);
     }
 }
 ```
@@ -447,6 +436,10 @@ All four helpers route DM vs group automatically based on the chat JID suffix
 Attach an emoji to an existing message.
 
 ```java
+// Automatic (preferred when responding to an event / received message):
+client.sendReaction(decodedMsg, "🔥").join();
+
+// Manual (by specifying target IDs directly):
 String reactionId = client.sendReaction(
     "120363...@g.us",                       // chat where the target lives
     "ACD57CB93B82719FD44D1F231C89F352",     // target message id
@@ -564,12 +557,16 @@ client.sendTextWithMentions(
 ### Reply / Quote
 
 Send a text reply that quotes an existing message. The recipient's UI renders a
-block-quote preview using `quotedText`.
+block-quote preview.
 
 ```java
+// Automatic (preferred when replying to an event / received message):
+client.sendReply(decodedMsg, "ok di-reply 🔥").join();
+
+// Manual (by specifying target IDs directly):
 String replyId = client.sendReply(
     "120363...@g.us",
-    "ok di-reaction 🔥",                    // new reply text
+    "ok di-reply 🔥",                       // new reply text
     "ACD57CB93B82719FD44D1F231C89F352",     // quoted message id
     "224983875903488@lid",                  // quoted sender (group); null for DM
     "test reaction"                         // preview of the quoted text
@@ -578,10 +575,13 @@ String replyId = client.sendReply(
 
 ### Edit Message
 
-Replace the text of a message you previously sent. Subject to WhatsApp's ~15-minute
-edit window — older messages are rejected server-side.
+Replace the text of a message you previously sent. Subject to WhatsApp's ~15-minute edit window.
 
 ```java
+// Automatic (preferred when editing a received/decoded message context):
+client.sendEdit(decodedMsg, "hello from jawa (edited)").join();
+
+// Manual (by specifying target IDs directly):
 String editId = client.sendEdit(
     "120363...@g.us",
     "E1DC8330D43C02D9",                     // the original message's id
@@ -718,10 +718,13 @@ chosen `rowId` (`"ping"` / `"info"` / `"menu"` / `"exec"` in the example above).
 
 ### Revoke (Delete for Everyone)
 
-Replaces the original with WhatsApp's "This message was deleted" placeholder for
-every participant.
+Replaces the original with WhatsApp's "This message was deleted" placeholder for every participant.
 
 ```java
+// Automatic (preferred when revoking a received/decoded message context):
+client.sendRevoke(decodedMsg).join();
+
+// Manual (by specifying target IDs directly):
 // revoke your own message
 client.sendRevoke(
     "120363...@g.us",
@@ -881,6 +884,11 @@ that care about peer-side state hook into them via `Listener.onReceipt`.
 ### Send Read / Played Receipt
 
 ```java
+// Automatic (preferred when responding to an event / received message):
+client.sendReadReceipt(decodedMsg);
+client.sendPlayedReceipt(decodedMsg);  // for voice notes
+
+// Manual (by specifying target IDs directly):
 // DM: a peer sent us a message we just rendered
 client.sendReadReceipt("628xxx@s.whatsapp.net", msgId, /* senderJid = */ null);
 

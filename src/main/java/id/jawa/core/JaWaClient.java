@@ -611,12 +611,38 @@ public final class JaWaClient implements AutoCloseable {
     }
 
     /**
+     * Send any {@link id.jawa.proto.Wa.Message} to the chat of the received message.
+     * Routes automatically depending on the JID suffix.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendMessage(
+            id.jawa.message.MessageReceiver.Decoded target, id.jawa.proto.Wa.Message msg) {
+        String chatJid = target.groupJid() != null ? target.groupJid() : target.senderJid();
+        if (!chatJid.endsWith("@g.us")) {
+            id.jawa.util.Jid j = id.jawa.util.Jid.parse(chatJid);
+            if (j != null) {
+                chatJid = j.user() + "@" + j.server();
+            }
+        }
+        return sendMessage(chatJid, msg);
+    }
+
+    /**
      * Send a plain text message to a user or a group.
      * Routes automatically depending on the JID suffix.
      */
     public java.util.concurrent.CompletableFuture<String> sendText(String chatJid, String text) {
         return sendMessage(chatJid, MessageEncoder.text(text));
     }
+
+    /**
+     * Send a plain text message replying/sending to the chat of the received message.
+     * Routes automatically depending on the JID suffix.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendText(
+            id.jawa.message.MessageReceiver.Decoded target, String text) {
+        return sendMessage(target, MessageEncoder.text(text));
+    }
+
 
 
     /**
@@ -834,6 +860,24 @@ public final class JaWaClient implements AutoCloseable {
     }
 
     /**
+     * React to a received message.
+     * Automatically extracts target details from the decoded message.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendReaction(
+            id.jawa.message.MessageReceiver.Decoded target, String emoji) {
+        String chatJid = target.groupJid() != null ? target.groupJid() : target.senderJid();
+        if (!chatJid.endsWith("@g.us")) {
+            id.jawa.util.Jid j = id.jawa.util.Jid.parse(chatJid);
+            if (j != null) chatJid = j.user() + "@" + j.server();
+        }
+        id.jawa.util.Jid myJid = id.jawa.util.Jid.parse(creds.meJid);
+        id.jawa.util.Jid senderJid = id.jawa.util.Jid.parse(target.senderJid());
+        boolean fromMe = myJid != null && senderJid != null && myJid.user().equals(senderJid.user());
+        String targetParticipant = target.groupJid() != null ? target.senderJid() : null;
+        return sendReaction(chatJid, target.msgId(), targetParticipant, fromMe, emoji);
+    }
+
+    /**
      * Send a text reply that quotes an existing message. Routes DM vs group based on
      * {@code chatJid} suffix.
      *
@@ -857,6 +901,22 @@ public final class JaWaClient implements AutoCloseable {
             return sendGroupMessage(chatJid, msg);
         }
         return sendDmMessage(chatJid, msg);
+    }
+
+    /**
+     * Send a text reply quoting a received message.
+     * Automatically extracts target details from the decoded message.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendReply(
+            id.jawa.message.MessageReceiver.Decoded target, String text) {
+        String chatJid = target.groupJid() != null ? target.groupJid() : target.senderJid();
+        if (!chatJid.endsWith("@g.us")) {
+            id.jawa.util.Jid j = id.jawa.util.Jid.parse(chatJid);
+            if (j != null) chatJid = j.user() + "@" + j.server();
+        }
+        String quotedSender = target.groupJid() != null ? target.senderJid() : null;
+        String quotedText = target.text() != null ? target.text() : "";
+        return sendReply(chatJid, text, target.msgId(), quotedSender, quotedText);
     }
 
     /**
@@ -1001,6 +1061,21 @@ public final class JaWaClient implements AutoCloseable {
         }
         return sendDmMessage(chatJid, msg);
     }
+
+    /**
+     * Edit a previously-sent message.
+     * Automatically extracts target details from the decoded message.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendEdit(
+            id.jawa.message.MessageReceiver.Decoded target, String newText) {
+        String chatJid = target.groupJid() != null ? target.groupJid() : target.senderJid();
+        if (!chatJid.endsWith("@g.us")) {
+            id.jawa.util.Jid j = id.jawa.util.Jid.parse(chatJid);
+            if (j != null) chatJid = j.user() + "@" + j.server();
+        }
+        return sendEdit(chatJid, target.msgId(), newText);
+    }
+
 
     /**
      * Revoke (delete-for-everyone) a message.
@@ -1231,6 +1306,25 @@ public final class JaWaClient implements AutoCloseable {
         }
         return sendDmMessage(chatJid, msg);
     }
+
+    /**
+     * Revoke (delete-for-everyone) a received or sent message.
+     * Automatically extracts target details from the decoded message.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendRevoke(
+            id.jawa.message.MessageReceiver.Decoded target) {
+        String chatJid = target.groupJid() != null ? target.groupJid() : target.senderJid();
+        if (!chatJid.endsWith("@g.us")) {
+            id.jawa.util.Jid j = id.jawa.util.Jid.parse(chatJid);
+            if (j != null) chatJid = j.user() + "@" + j.server();
+        }
+        id.jawa.util.Jid myJid = id.jawa.util.Jid.parse(creds.meJid);
+        id.jawa.util.Jid senderJid = id.jawa.util.Jid.parse(target.senderJid());
+        boolean fromMe = myJid != null && senderJid != null && myJid.user().equals(senderJid.user());
+        String targetParticipant = target.groupJid() != null ? target.senderJid() : null;
+        return sendRevoke(chatJid, target.msgId(), targetParticipant, fromMe);
+    }
+
 
     private volatile id.jawa.media.MediaConn mediaConnCache;
     private final Object mediaConnLock = new Object();
@@ -1749,10 +1843,31 @@ public final class JaWaClient implements AutoCloseable {
         sendStateReceipt(chatJid, msgId, senderJid, "read");
     }
 
+    /**
+     * Send a read receipt (blue ticks) for a received message.
+     * Automatically extracts target details from the decoded message.
+     */
+    public void sendReadReceipt(id.jawa.message.MessageReceiver.Decoded target) {
+        String chatJid = target.groupJid() != null ? target.groupJid() : target.senderJid();
+        String senderJid = target.groupJid() != null ? target.senderJid() : null;
+        sendReadReceipt(chatJid, target.msgId(), senderJid);
+    }
+
     /** Send a played receipt for a voice note. See {@link #sendReadReceipt} for arg semantics. */
     public void sendPlayedReceipt(String chatJid, String msgId, String senderJid) {
         sendStateReceipt(chatJid, msgId, senderJid, "played");
     }
+
+    /**
+     * Send a played receipt for a voice note.
+     * Automatically extracts target details from the decoded message.
+     */
+    public void sendPlayedReceipt(id.jawa.message.MessageReceiver.Decoded target) {
+        String chatJid = target.groupJid() != null ? target.groupJid() : target.senderJid();
+        String senderJid = target.groupJid() != null ? target.senderJid() : null;
+        sendPlayedReceipt(chatJid, target.msgId(), senderJid);
+    }
+
 
     /**
      * Send a read/played receipt for multiple messages in one stanza. Useful when
