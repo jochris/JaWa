@@ -401,16 +401,17 @@ Wa.Message custom = Wa.Message.newBuilder()
         .setText("**bold** isn't a thing, but extendedText carries metadata"))
     .build();
 
-// Automatically routes to group or DM based on the JID suffix
+// Automatically routes to group, DM, or newsletter based on the JID suffix
 client.sendMessage("628xxx@s.whatsapp.net", custom).join();
 client.sendMessage("120363...@g.us", custom).join();
+client.sendMessage("120363...@newsletter", custom).join();
 ```
 
 
 ## Modify Messages
 
-All four helpers route DM vs group automatically based on the chat JID suffix
-(`@g.us` → group, otherwise DM) and return the new outbound message's id.
+All helpers route DM, group, and newsletter automatically based on the chat JID suffix
+(`@g.us` → group, `@newsletter` → newsletter, otherwise DM) and return the new outbound message's id.
 
 ### Reaction
 

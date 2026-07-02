@@ -600,11 +600,10 @@ public final class JaWaClient implements AutoCloseable {
      * insert the outgoing message into their local chat history. Without it, the message
      * reaches the recipient but the sender's own phone shows no record of it.
      */
-    /**
-     * Send any {@link id.jawa.proto.Wa.Message} to a chat (DM or group).
-     * Routes automatically depending on the JID suffix ({@code @g.us} is sent via group protocol, otherwise DM).
-     */
     public java.util.concurrent.CompletableFuture<String> sendMessage(String chatJid, id.jawa.proto.Wa.Message msg) {
+        if (chatJid.endsWith("@newsletter")) {
+            return sendNewsletterMessage(chatJid, msg);
+        }
         return chatJid.endsWith("@g.us")
             ? sendGroupMessage(chatJid, msg)
             : sendDmMessage(chatJid, msg);
@@ -827,6 +826,33 @@ public final class JaWaClient implements AutoCloseable {
                 });
             });
         });
+    }
+
+    /**
+     * Send a message to a newsletter (channel).
+     * Newsletters are sent in plaintext (no E2EE) using a `<plaintext>` node.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendNewsletterMessage(
+            String newsletterJid, id.jawa.proto.Wa.Message msg) {
+        String msgId = newIqId().toUpperCase();
+
+        String msgType = "text";
+        if (msg.hasImageMessage()) msgType = "image";
+        else if (msg.hasVideoMessage()) msgType = "video";
+        else if (msg.hasAudioMessage()) msgType = "audio";
+        else if (msg.hasDocumentMessage()) msgType = "document";
+
+        BinaryNode plaintextNode = new BinaryNode("plaintext", java.util.Map.of(), msg.toByteArray());
+
+        BinaryNode stanza = new BinaryNode("message", java.util.Map.of(
+            "to", newsletterJid,
+            "id", msgId,
+            "type", msgType
+        ), java.util.List.of(plaintextNode));
+
+        send(stanza);
+        LOG.info("Sent newsletter message id={} to={} type={}", msgId, newsletterJid, msgType);
+        return java.util.concurrent.CompletableFuture.completedFuture(msgId);
     }
 
     /**
@@ -1161,6 +1187,9 @@ public final class JaWaClient implements AutoCloseable {
 
     private java.util.concurrent.CompletableFuture<String> sendBuiltMessage(
             String chatJid, id.jawa.proto.Wa.Message msg) {
+        if (chatJid.endsWith("@newsletter")) {
+            return sendNewsletterMessage(chatJid, msg);
+        }
         return chatJid.endsWith("@g.us")
             ? sendGroupMessage(chatJid, msg)
             : sendDmMessage(chatJid, msg);
