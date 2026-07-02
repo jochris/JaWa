@@ -128,13 +128,14 @@ public final class MessageSender {
         BinaryNode biz = BizNode.buildIfNeeded(message);
         if (biz != null) outer.add(biz);
 
-        BinaryNode stanza = new BinaryNode("message",
-            Map.of(
-                "to",   recipientBareJid,
-                "id",   msgId,
-                "type", "text"
-            ),
-            outer);
+        java.util.Map<String, String> attrs = new java.util.HashMap<>();
+        attrs.put("to", recipientBareJid);
+        attrs.put("id", msgId);
+        attrs.put("type", "text");
+        if (recipientBareJid.endsWith("@lid")) {
+            attrs.put("addressing_mode", "lid");
+        }
+        BinaryNode stanza = new BinaryNode("message", attrs, outer);
 
         return new Result(stanza, typeMap);
     }

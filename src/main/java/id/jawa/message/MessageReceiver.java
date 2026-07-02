@@ -199,7 +199,19 @@ public final class MessageReceiver {
             String name = ir.hasNativeFlowResponseMessage() ? ir.getNativeFlowResponseMessage().getName() : "";
             String params = ir.hasNativeFlowResponseMessage() ? ir.getNativeFlowResponseMessage().getParamsJson() : null;
             String body = ir.hasBody() ? ir.getBody().getText() : null;
-            return new InteractiveResponse("native_flow", name, params, body);
+            
+            String selectedId = null;
+            if (params != null) {
+                var matcher = java.util.regex.Pattern.compile("\"id\"\\s*:\\s*\"([^\"]+)\"").matcher(params);
+                if (matcher.find()) {
+                    selectedId = matcher.group(1);
+                }
+            }
+            if (selectedId == null) {
+                selectedId = name;
+            }
+            
+            return new InteractiveResponse("native_flow", selectedId, params, body);
         }
         return null;
     }
