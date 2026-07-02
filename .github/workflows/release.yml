@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# On every push to main, if `version` in build.gradle.kts is non-SNAPSHOT and the
+# On every push to main, if `version` in pom.xml is non-SNAPSHOT and the
 # matching `v<version>` tag does not yet exist, create the tag and a GitHub Release.
-# JitPack picks the tag up on the next consumer request — no manual release step.
 name: release
 
 on:

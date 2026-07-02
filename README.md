@@ -3,7 +3,7 @@
 [![build](https://github.com/jochris/JaWa/actions/workflows/build.yml/badge.svg)](https://github.com/jochris/JaWa/actions/workflows/build.yml)
 [![license](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
 [![java](https://img.shields.io/badge/java-21-orange)](https://openjdk.org/projects/jdk/21/)
-[![JitPack](https://img.shields.io/badge/JitPack-v0.0.2-brightgreen)](https://jitpack.io/#jochris/JaWa)
+[![Maven Central](https://img.shields.io/maven-central/v/io.github.jochris/JaWa)](https://central.sonatype.com/artifact/io.github.jochris/JaWa)
 
 > Unofficial **Java 21** library for the WhatsApp Web multi-device protocol,
 > ported from [Baileys](https://github.com/WhiskeySockets/Baileys) (TypeScript) and
