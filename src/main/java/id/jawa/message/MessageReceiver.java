@@ -107,6 +107,30 @@ public final class MessageReceiver {
         boolean isGroup = participant != null && from != null && !from.equals(participant);
         String groupJid = isGroup ? from : null;
 
+        // Track LID to PN mapping if present in stanza attributes
+        String senderPn = messageStanza.attr("sender_pn");
+        if (senderPn != null && !senderPn.isBlank() && from != null && from.endsWith("@lid")) {
+            id.jawa.util.Jid fromJid = id.jawa.util.Jid.parse(from);
+            id.jawa.util.Jid pnJid = id.jawa.util.Jid.parse(senderPn);
+            if (fromJid != null && pnJid != null) {
+                String fromBare = fromJid.user() + "@lid";
+                String pnBare = pnJid.user() + "@" + id.jawa.util.Jid.SERVER_WHATSAPP;
+                id.jawa.core.JaWaClient.LID_TO_PN_MAP.put(fromBare, pnBare);
+                LOG.debug("LID mapping added from sender_pn: {} -> {}", fromBare, pnBare);
+            }
+        }
+        String participantPn = messageStanza.attr("participant_pn");
+        if (participantPn != null && !participantPn.isBlank() && participant != null && participant.endsWith("@lid")) {
+            id.jawa.util.Jid partJid = id.jawa.util.Jid.parse(participant);
+            id.jawa.util.Jid pnJid = id.jawa.util.Jid.parse(participantPn);
+            if (partJid != null && pnJid != null) {
+                String partBare = partJid.user() + "@lid";
+                String pnBare = pnJid.user() + "@" + id.jawa.util.Jid.SERVER_WHATSAPP;
+                id.jawa.core.JaWaClient.LID_TO_PN_MAP.put(partBare, pnBare);
+                LOG.debug("LID mapping added from participant_pn: {} -> {}", partBare, pnBare);
+            }
+        }
+
         BinaryNode enc = findEnc(messageStanza);
         if (enc == null) {
             return new Decoded(senderJidStr, groupJid, msgId, null, null, null, null);

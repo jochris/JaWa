@@ -49,6 +49,9 @@ public final class JaWaClient implements AutoCloseable {
 
     private static final Logger LOG = LoggerFactory.getLogger(JaWaClient.class);
 
+    public static final java.util.concurrent.ConcurrentHashMap<String, String> LID_TO_PN_MAP =
+        new java.util.concurrent.ConcurrentHashMap<>();
+
     /** Categorised reason the server tore the session down. */
     public enum TerminationReason {
         /** {@code <failure reason="401">} — device record revoked; user unlinked us. */
@@ -705,8 +708,17 @@ public final class JaWaClient implements AutoCloseable {
      */
     public java.util.concurrent.CompletableFuture<String>
             sendDmMessage(String toUser, id.jawa.proto.Wa.Message msg) {
+        String resolvedToUser = toUser;
+        if (toUser != null && toUser.endsWith("@lid")) {
+            String mappedPn = LID_TO_PN_MAP.get(toUser);
+            if (mappedPn != null && !mappedPn.isEmpty()) {
+                LOG.debug("Rotating outgoing DM JID from LID {} to PN {}", toUser, mappedPn);
+                resolvedToUser = mappedPn;
+            }
+        }
+        final String finalToUser = resolvedToUser;
         String ownBareJid;
-        if (toUser.endsWith("@lid") && creds.meLid != null && !creds.meLid.isBlank()) {
+        if (finalToUser.endsWith("@lid") && creds.meLid != null && !creds.meLid.isBlank()) {
             id.jawa.util.Jid lidJid = id.jawa.util.Jid.parse(creds.meLid);
             ownBareJid = lidJid != null ? lidJid.user() + "@lid" : creds.meLid;
         } else {
@@ -717,10 +729,10 @@ public final class JaWaClient implements AutoCloseable {
             }
             ownBareJid = myJid.user() + "@" + id.jawa.util.Jid.SERVER_WHATSAPP;
         }
-        boolean isSelfSend = toUser.equals(ownBareJid);
+        boolean isSelfSend = finalToUser.equals(ownBareJid);
         java.util.List<String> queryTargets = isSelfSend
-            ? java.util.List.of(toUser)
-            : java.util.List.of(toUser, ownBareJid);
+            ? java.util.List.of(finalToUser)
+            : java.util.List.of(finalToUser, ownBareJid);
 
         id.jawa.util.Jid ownJidObj = id.jawa.util.Jid.parse(ownBareJid);
         String ownUser = ownJidObj != null ? ownJidObj.user() : "";
@@ -737,11 +749,11 @@ public final class JaWaClient implements AutoCloseable {
             return fetchBundlesAndInstallSessions(allDeviceJids).thenApply(addresses -> {
                 String msgId = newIqId().toUpperCase();
                 MessageSender.Result result = MessageSender.buildStanza(
-                    protocolStore, creds, msgId, toUser, allDeviceJids, msg);
+                    protocolStore, creds, msgId, finalToUser, allDeviceJids, msg);
                 send(result.stanza());
                 int ownCount = countOwnDevices(allDeviceJids, ownUser);
                 LOG.info("Sent message id={} to={} ({} device(s) total, {} own-companion DSM)",
-                    msgId, toUser, allDeviceJids.size(),
+                    msgId, finalToUser, allDeviceJids.size(),
                     Math.max(0, ownCount - 1)); // -1 for the sender device, which is skipped
                 return msgId;
             });
