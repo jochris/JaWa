@@ -90,8 +90,17 @@ public final class GroupSender {
         Objects.requireNonNull(senderKeyStore);
         Objects.requireNonNull(message);
 
-        Jid myJid = Jid.parse(creds.meJid);
-        if (myJid == null) throw new IllegalStateException("creds.meJid invalid");
+        boolean useLid = false;
+        if (creds.meLid != null && !creds.meLid.isEmpty()) {
+            for (String dj : participantDeviceJids) {
+                if (dj.endsWith("@lid")) {
+                    useLid = true;
+                    break;
+                }
+            }
+        }
+        Jid myJid = Jid.parse(useLid ? creds.meLid : creds.meJid);
+        if (myJid == null) throw new IllegalStateException("creds.meJid/meLid invalid");
         SignalProtocolAddress myAddr = new SignalProtocolAddress(myJid.user(), myJid.device());
 
         // 1. Pull or create our sender-key state for this group; the returned SKDM
@@ -166,13 +175,14 @@ public final class GroupSender {
         BinaryNode biz = BizNode.buildIfNeeded(message);
         if (biz != null) outer.add(biz);
 
-        BinaryNode stanza = new BinaryNode("message",
-            Map.of(
-                "to",   groupJid,
-                "id",   msgId,
-                "type", "text"
-            ),
-            outer);
+        java.util.Map<String, String> attrs = new java.util.HashMap<>();
+        attrs.put("to", groupJid);
+        attrs.put("id", msgId);
+        attrs.put("type", "text");
+        if (useLid) {
+            attrs.put("from", myJid.user() + "@lid");
+        }
+        BinaryNode stanza = new BinaryNode("message", attrs, outer);
 
         return new Result(stanza, typeMap, participants.size());
     }

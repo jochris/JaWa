@@ -74,7 +74,7 @@ public final class ClientPayloadBuilder {
                 .setPull(true)
                 .setUsername(Long.parseLong(me.user()))
                 .setDevice(me.device())
-                .setLidDbMigrated(false)
+                .setLidDbMigrated(true)
                 .build();
     }
 
