@@ -67,9 +67,8 @@ public final class ClientPayloadBuilder {
     }
 
     public static Wa.ClientPayload login(AuthCreds creds) {
-        String selfJidStr = (creds.meLid != null && !creds.meLid.isBlank()) ? creds.meLid : creds.meJid;
-        Jid me = Jid.parse(selfJidStr);
-        if (me == null) throw new IllegalStateException("creds.meJid/meLid is invalid: " + selfJidStr);
+        Jid me = Jid.parse(creds.meJid);
+        if (me == null) throw new IllegalStateException("creds.meJid is invalid: " + creds.meJid);
         return common()
                 .setPassive(true)
                 .setPull(true)
