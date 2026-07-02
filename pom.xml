@@ -199,6 +199,7 @@
                 <configuration>
                     <mainClass>id.jawa.Main</mainClass>
                     <cleanupDaemonThreads>false</cleanupDaemonThreads>
+                    <classpathScope>test</classpathScope>
                 </configuration>
             </plugin>
 
