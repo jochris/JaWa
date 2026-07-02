@@ -153,7 +153,7 @@ public final class SimpleBot {
             freeMemory
         );
 
-        client.sendReply(d, response);
+        client.sendMessage(chatJid, id.jawa.message.MessageEncoder.text(response));
     }
 
     private static void sendCtaButtons(JaWaClient client, String chatJid) {
@@ -202,17 +202,19 @@ public final class SimpleBot {
 
     private static void sendList(JaWaClient client, String chatJid) {
         client.sendChatPresence(chatJid, ChatPresence.COMPOSING);
-        List<ListSection> sections = List.of(
-            new ListSection("Main Actions", List.of(
-                new ListRow("ping_cmd", "Ping", "Check server health and uptime"),
-                new ListRow("menu_cmd", "Show Menu", "Tampilkan navigasi menu bot")
-            )),
-            new ListSection("Demos", List.of(
-                new ListRow("buttons_cmd", "Interactive Buttons", "Demo CTA buttons"),
-                new ListRow("carousel_cmd", "Carousel Slider", "Demo horizontal scroll card list")
+        List<CtaButton> buttons = List.of(
+            CtaButton.singleSelect("Buka Dropdown 📋", List.of(
+                new ListSection("Main Actions", List.of(
+                    new ListRow("ping_cmd", "Ping", "Check server health and uptime"),
+                    new ListRow("menu_cmd", "Show Menu", "Tampilkan navigasi menu bot")
+                )),
+                new ListSection("Demos", List.of(
+                    new ListRow("buttons_cmd", "Interactive Buttons", "Demo CTA buttons"),
+                    new ListRow("carousel_cmd", "Carousel Slider", "Demo horizontal scroll card list")
+                ))
             ))
         );
-        client.sendListMessage(chatJid, "List Demo", "*Pilih salah satu menu dari dropdown:*", "JaWa Dropdown", "Buka Dropdown 📋", sections);
+        client.sendCtaButtons(chatJid, "*Pilih salah satu menu dari dropdown:*", "JaWa Dropdown", buttons);
     }
 
     private static byte[] getDummyImageBytes(int rgbColor) {

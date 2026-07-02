@@ -175,6 +175,8 @@ public final class MessageReceiver {
 
         InteractiveResponse interactive = parseInteractive(message);
 
+        System.out.println(">>> Decoded Wa.Message: " + message);
+
         LOG.debug("Decoded {} from {}{} (encType={}, text={}, interactive={})",
             msgId, senderJidStr,
             groupJid != null ? " in group " + groupJid : "",
@@ -212,6 +214,11 @@ public final class MessageReceiver {
             }
             
             return new InteractiveResponse("native_flow", selectedId, params, body);
+        }
+        if (message.hasTemplateButtonReplyMessage()) {
+            var t = message.getTemplateButtonReplyMessage();
+            return new InteractiveResponse("template",
+                t.getSelectedId(), null, t.getSelectedDisplayText());
         }
         return null;
     }
