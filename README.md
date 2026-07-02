@@ -857,6 +857,91 @@ verification, and AES-CBC decrypt:
 `downloadByUrl` is preferred when `url` is set (one round-trip); `downloadByDirectPath`
 fetches a fresh `mediaConn` then tries each host until one returns 200.
 
+## User, Presence & Contact Management
+
+Manage online/offline presence status, typing indicators, contact checks, bio status, and blocklists.
+
+### Check if Phone Number is Registered (isOnWhatsApp)
+
+Query if one or more phone numbers are registered on WhatsApp:
+
+```java
+import id.jawa.message.ContactStatus;
+
+client.isOnWhatsApp(List.of("628xxx", "628yyy"))
+    .thenAccept(map -> {
+        for (ContactStatus status : map.values()) {
+            System.out.println(status.jid() + " is registered: " + status.isOnWhatsApp());
+        }
+    });
+```
+
+### Send Chat Presence (Typing / Recording Indicators)
+
+Send typing or audio recording status indicators to a specific chat (DM or Group):
+
+```java
+import id.jawa.core.ChatPresence;
+
+// Set typing status
+client.sendChatPresence("628xxx@s.whatsapp.net", ChatPresence.COMPOSING);
+
+// Set recording audio status
+client.sendChatPresence("120363...@g.us", ChatPresence.RECORDING);
+
+// Stop / Pause status
+client.sendChatPresence("628xxx@s.whatsapp.net", ChatPresence.PAUSED);
+```
+
+### Send Presence (Online / Offline status)
+
+Update the bot's global online status:
+
+```java
+client.sendPresence(true);  // Online (available)
+client.sendPresence(false); // Offline (unavailable)
+```
+
+### Set About/Status Txt
+
+Update the text status (bio) of the bot account:
+
+```java
+client.setStatusMessage("Active JaWa Bot 🤖").join();
+```
+
+### Profile Picture Info
+
+Fetch the public profile picture URL of a contact:
+
+```java
+client.getProfilePictureInfo("628xxx@s.whatsapp.net")
+    .thenAccept(url -> {
+        if (url != null) {
+            System.out.println("Profile Pic URL: " + url);
+        } else {
+            System.out.println("No profile picture or restricted by privacy settings");
+        }
+    });
+```
+
+### Manage Blocklist
+
+Block, unblock, or query the list of blocked JIDs:
+
+```java
+// Query blocked users
+client.getBlocklist().thenAccept(jids -> {
+    System.out.println("Blocked users: " + jids);
+});
+
+// Block a contact
+client.updateBlocklist("628xxx@s.whatsapp.net", true).join();
+
+// Unblock a contact
+client.updateBlocklist("628xxx@s.whatsapp.net", false).join();
+```
+
 ## Receipts
 
 WhatsApp's lifecycle ticks (delivered, read, played) ride on `<receipt>` stanzas.

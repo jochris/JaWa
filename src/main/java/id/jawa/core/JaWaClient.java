@@ -1959,5 +1959,137 @@ public final class JaWaClient implements AutoCloseable {
         closeLatch.countDown();
     }
 
+    /**
+     * Check if the given phone numbers are registered on WhatsApp.
+     * Uses USync contact query protocol.
+     */
+    public java.util.concurrent.CompletableFuture<java.util.Map<String, id.jawa.message.ContactStatus>> isOnWhatsApp(
+            java.util.Collection<String> phones) {
+        String iqId = newIqId();
+        String sid = newIqId();
+        BinaryNode q = id.jawa.message.UsyncQuery.buildContactQuery(iqId, sid, phones);
+        LOG.debug("Sent contact check USync IQ id={} for {} phones", iqId, phones.size());
+        return sendIqAsync(q).thenApply(id.jawa.message.UsyncQuery::parseContactResult);
+    }
+
+    /**
+     * Send chat presence state (typing composing indicator or recording audio).
+     */
+    public void sendChatPresence(String chatJid, ChatPresence state) {
+        BinaryNode child;
+        if (state == ChatPresence.COMPOSING) {
+            child = new BinaryNode("composing", java.util.Map.of("media", "text"), null);
+        } else if (state == ChatPresence.RECORDING) {
+            child = new BinaryNode("composing", java.util.Map.of("media", "audio"), null);
+        } else {
+            child = new BinaryNode("paused", java.util.Map.of(), null);
+        }
+        BinaryNode stanza = new BinaryNode("chatstate", java.util.Map.of("to", chatJid), java.util.List.of(child));
+        send(stanza);
+        LOG.debug("Sent chat presence state={} to={}", state, chatJid);
+    }
+
+    /**
+     * Set global online/offline presence status.
+     * @param available true for "available" (online), false for "unavailable" (offline)
+     */
+    public void sendPresence(boolean available) {
+        BinaryNode stanza = new BinaryNode("presence", java.util.Map.of(
+            "type", available ? "available" : "unavailable"
+        ), null);
+        send(stanza);
+        LOG.debug("Sent presence type={}", available ? "available" : "unavailable");
+    }
+
+    /**
+     * Update/set the about/status text message for the bot account.
+     */
+    public java.util.concurrent.CompletableFuture<Void> setStatusMessage(String statusText) {
+        String iqId = newIqId();
+        BinaryNode statusNode = new BinaryNode("status", java.util.Map.of(), statusText.getBytes());
+        BinaryNode iq = new BinaryNode("iq", java.util.Map.of(
+            "to", id.jawa.util.Jid.SERVER_WHATSAPP,
+            "type", "set",
+            "xmlns", "status",
+            "id", iqId
+        ), java.util.List.of(statusNode));
+        return sendIqAsync(iq).thenApply(resp -> {
+            if ("error".equals(resp.attr("type"))) {
+                throw new IllegalStateException("Failed to set status message: " + resp);
+            }
+            return null;
+        });
+    }
+
+    /**
+     * Fetch the list of JIDs currently blocked by the account.
+     */
+    public java.util.concurrent.CompletableFuture<java.util.List<String>> getBlocklist() {
+        String iqId = newIqId();
+        BinaryNode iq = new BinaryNode("iq", java.util.Map.of(
+            "to", id.jawa.util.Jid.SERVER_WHATSAPP,
+            "type", "get",
+            "xmlns", "blocklist",
+            "id", iqId
+        ), null);
+        return sendIqAsync(iq).thenApply(resp -> {
+            if ("error".equals(resp.attr("type"))) {
+                throw new IllegalStateException("Failed to get blocklist: " + resp);
+            }
+            BinaryNode blocklist = resp.child("blocklist");
+            java.util.List<String> jids = new java.util.ArrayList<>();
+            if (blocklist != null) {
+                for (BinaryNode item : blocklist.children("item")) {
+                    String jid = item.attr("jid");
+                    if (jid != null) jids.add(jid);
+                }
+            }
+            return jids;
+        });
+    }
+
+    /**
+     * Block or unblock a contact.
+     */
+    public java.util.concurrent.CompletableFuture<Void> updateBlocklist(String contactJid, boolean block) {
+        String iqId = newIqId();
+        BinaryNode item = new BinaryNode(block ? "block" : "unblock", java.util.Map.of("jid", contactJid), null);
+        BinaryNode blocklist = new BinaryNode("blocklist", java.util.Map.of(), java.util.List.of(item));
+        BinaryNode iq = new BinaryNode("iq", java.util.Map.of(
+            "to", id.jawa.util.Jid.SERVER_WHATSAPP,
+            "type", "set",
+            "xmlns", "blocklist",
+            "id", iqId
+        ), java.util.List.of(blocklist));
+        return sendIqAsync(iq).thenApply(resp -> {
+            if ("error".equals(resp.attr("type"))) {
+                throw new IllegalStateException("Failed to update blocklist: " + resp);
+            }
+            return null;
+        });
+    }
+
+    /**
+     * Retrieve the public profile picture URL for the given contact.
+     * Returns null if not set or restricted due to privacy settings.
+     */
+    public java.util.concurrent.CompletableFuture<String> getProfilePictureInfo(String contactJid) {
+        String iqId = newIqId();
+        BinaryNode picture = new BinaryNode("picture", java.util.Map.of("type", "image"), null);
+        BinaryNode iq = new BinaryNode("iq", java.util.Map.of(
+            "to", contactJid,
+            "type", "get",
+            "xmlns", "w:profile:picture",
+            "id", iqId
+        ), java.util.List.of(picture));
+        return sendIqAsync(iq).thenApply(resp -> {
+            if ("error".equals(resp.attr("type"))) {
+                return null;
+            }
+            BinaryNode pic = resp.child("picture");
+            return pic != null ? pic.attr("url") : null;
+        });
+    }
+
     public AuthCreds creds() { return creds; }
 }

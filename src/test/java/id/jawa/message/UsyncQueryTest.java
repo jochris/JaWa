@@ -85,9 +85,51 @@ class UsyncQueryTest {
     }
 
     @Test
+    void contactQueryHasExpectedShape() {
+        BinaryNode iq = UsyncQuery.buildContactQuery("iq2", "sid2",
+            List.of("628111", "628222@s.whatsapp.net"));
+
+        assertThat(iq.tag()).isEqualTo("iq");
+        BinaryNode usync = iq.child("usync");
+        assertThat(usync).isNotNull();
+        assertThat(usync.attr("sid")).isEqualTo("sid2");
+
+        BinaryNode query = usync.child("query");
+        assertThat(query.child("contact")).isNotNull();
+
+        BinaryNode list = usync.child("list");
+        assertThat(list.children("user")).hasSize(2);
+        assertThat(list.children("user").get(0).attr("jid")).isEqualTo("628111@s.whatsapp.net");
+        assertThat(list.children("user").get(1).attr("jid")).isEqualTo("628222@s.whatsapp.net");
+    }
+
+    @Test
+    void parseContactResultExtractsStatuses() {
+        BinaryNode result = new BinaryNode("iq", Map.of("type", "result", "id", "x"), List.of(
+            new BinaryNode("usync", Map.of("sid", "x", "mode", "query"), List.of(
+                new BinaryNode("list", Map.of(), List.of(
+                    new BinaryNode("user", Map.of("jid", "628111@s.whatsapp.net"), List.of(
+                        new BinaryNode("contact", Map.of("type", "in"), null)
+                    )),
+                    new BinaryNode("user", Map.of("jid", "628222@s.whatsapp.net"), List.of(
+                        new BinaryNode("contact", Map.of("type", "out"), null)
+                    ))
+                ))
+            ))
+        ));
+
+        Map<String, ContactStatus> parsed = UsyncQuery.parseContactResult(result);
+        assertThat(parsed).containsKeys("628111@s.whatsapp.net", "628222@s.whatsapp.net");
+        assertThat(parsed.get("628111@s.whatsapp.net").isOnWhatsApp()).isTrue();
+        assertThat(parsed.get("628222@s.whatsapp.net").isOnWhatsApp()).isFalse();
+    }
+
+    @Test
     void nonResultIqThrows() {
         BinaryNode err = new BinaryNode("iq", Map.of("type", "error"), null);
         org.assertj.core.api.Assertions.assertThatThrownBy(() -> UsyncQuery.parseDeviceListResult(err))
+            .isInstanceOf(IllegalArgumentException.class);
+        org.assertj.core.api.Assertions.assertThatThrownBy(() -> UsyncQuery.parseContactResult(err))
             .isInstanceOf(IllegalArgumentException.class);
     }
 }

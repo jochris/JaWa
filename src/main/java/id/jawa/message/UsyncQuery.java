@@ -103,6 +103,58 @@ public final class UsyncQuery {
         return out;
     }
 
+    public static BinaryNode buildContactQuery(String iqId, String sid, Collection<String> phones) {
+        List<BinaryNode> userNodes = new ArrayList<>(phones.size());
+        for (String phone : phones) {
+            String jid = phone.contains("@") ? phone : phone + "@" + Jid.SERVER_WHATSAPP;
+            userNodes.add(new BinaryNode("user", Map.of("jid", jid), null));
+        }
+
+        BinaryNode usync = new BinaryNode("usync",
+            Map.of(
+                "sid",     sid,
+                "mode",    "query",
+                "last",    "true",
+                "index",   "0",
+                "context", "interactive"
+            ),
+            List.of(
+                new BinaryNode("query", Map.of(), List.of(
+                    new BinaryNode("contact", Map.of(), null)
+                )),
+                new BinaryNode("list", Map.of(), userNodes)
+            ));
+
+        return new BinaryNode("iq",
+            Map.of(
+                "xmlns", "usync",
+                "type",  "get",
+                "to",    Jid.SERVER_WHATSAPP,
+                "id",    iqId
+            ),
+            List.of(usync));
+    }
+
+    public static Map<String, ContactStatus> parseContactResult(BinaryNode resultIq) {
+        if (!"result".equals(resultIq.attr("type"))) {
+            throw new IllegalArgumentException("not a usync result iq: " + resultIq);
+        }
+        BinaryNode usync = resultIq.child("usync");
+        if (usync == null) return Map.of();
+        BinaryNode list = usync.child("list");
+        if (list == null) return Map.of();
+
+        Map<String, ContactStatus> out = new LinkedHashMap<>();
+        for (BinaryNode user : list.children("user")) {
+            String jid = user.attr("jid");
+            if (jid == null) continue;
+            BinaryNode contactNode = user.child("contact");
+            boolean isIn = contactNode != null && "in".equals(contactNode.attr("type"));
+            out.put(jid, new ContactStatus(jid, isIn));
+        }
+        return out;
+    }
+
     private static int parseIntOr(String s, int def) {
         if (s == null) return def;
         try { return Integer.parseInt(s); } catch (NumberFormatException e) { return def; }
