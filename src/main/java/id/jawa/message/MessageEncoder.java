@@ -566,6 +566,33 @@ public final class MessageEncoder {
             .build();
         return Wa.Message.newBuilder().setExtendedTextMessage(extended).build();
     }
+    
+    /** Wrap any message in a reply/quote context quoting a received message. */
+    public static Wa.Message quote(Wa.Message message, String quotedMsgId, String quotedSender, String quotedText) {
+        if (message == null) return null;
+        Wa.Message quotedStub = Wa.Message.newBuilder()
+            .setConversation(quotedText == null ? "" : quotedText)
+            .build();
+        Wa.ContextInfo.Builder ctx = Wa.ContextInfo.newBuilder()
+            .setStanzaId(quotedMsgId)
+            .setQuotedMessage(quotedStub);
+        if (quotedSender != null && !quotedSender.isBlank()) {
+            ctx.setParticipant(quotedSender);
+        }
+        Wa.Message.Builder builder = message.toBuilder();
+        if (message.hasInteractiveMessage()) {
+            builder.setInteractiveMessage(message.getInteractiveMessage().toBuilder().setContextInfo(ctx.build()));
+        } else if (message.hasExtendedTextMessage()) {
+            builder.setExtendedTextMessage(message.getExtendedTextMessage().toBuilder().setContextInfo(ctx.build()));
+        } else if (message.hasConversation()) {
+            builder.setExtendedTextMessage(Wa.Message.ExtendedTextMessage.newBuilder()
+                .setText(message.getConversation())
+                .setContextInfo(ctx.build())
+                .build())
+                .clearConversation();
+        }
+        return builder.build();
+    }
 
     /**
      * Build an edit envelope for an existing message. The recipient's UI replaces the

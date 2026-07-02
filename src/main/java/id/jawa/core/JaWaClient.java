@@ -1018,6 +1018,15 @@ public final class JaWaClient implements AutoCloseable {
             String body,
             String footer,
             java.util.List<CarouselCardInput> inputs) {
+        return sendCarousel(chatJid, body, footer, inputs, null);
+    }
+
+    public java.util.concurrent.CompletableFuture<String> sendCarousel(
+            String chatJid,
+            String body,
+            String footer,
+            java.util.List<CarouselCardInput> inputs,
+            id.jawa.proto.Wa.ContextInfo quoted) {
         java.util.List<java.util.concurrent.CompletableFuture<MessageEncoder.CarouselCard>> futures =
             new java.util.ArrayList<>();
         for (CarouselCardInput in : inputs) {
@@ -1053,6 +1062,11 @@ public final class JaWaClient implements AutoCloseable {
             java.util.List<MessageEncoder.CarouselCard> cards = new java.util.ArrayList<>();
             for (var f : futures) cards.add(f.join());
             id.jawa.proto.Wa.Message msg = MessageEncoder.interactiveCarousel(body, footer, cards);
+            if (quoted != null) {
+                msg = msg.toBuilder()
+                    .setInteractiveMessage(msg.getInteractiveMessage().toBuilder().setContextInfo(quoted))
+                    .build();
+            }
             return sendBuiltMessage(chatJid, msg);
         });
     }
