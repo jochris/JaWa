@@ -60,8 +60,8 @@ public final class MessageSender {
         Objects.requireNonNull(creds);
         Objects.requireNonNull(message);
 
-        Jid myJid = Jid.parse(creds.meJid);
-        if (myJid == null) throw new IllegalStateException("creds.meJid invalid");
+        Jid myJid = Jid.parse(recipientBareJid.endsWith("@lid") && creds.meLid != null && !creds.meLid.isBlank() ? creds.meLid : creds.meJid);
+        if (myJid == null) throw new IllegalStateException("creds.meJid/meLid invalid");
         SignalProtocolAddress myAddr = new SignalProtocolAddress(myJid.user(), myJid.device());
         String ownUser = myJid.user();
 

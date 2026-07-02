@@ -705,16 +705,25 @@ public final class JaWaClient implements AutoCloseable {
      */
     public java.util.concurrent.CompletableFuture<String>
             sendDmMessage(String toUser, id.jawa.proto.Wa.Message msg) {
-        id.jawa.util.Jid myJid = id.jawa.util.Jid.parse(creds.meJid);
-        if (myJid == null) {
-            return java.util.concurrent.CompletableFuture.failedFuture(
-                new IllegalStateException("creds.meJid invalid"));
+        String ownBareJid;
+        if (toUser.endsWith("@lid") && creds.meLid != null && !creds.meLid.isBlank()) {
+            id.jawa.util.Jid lidJid = id.jawa.util.Jid.parse(creds.meLid);
+            ownBareJid = lidJid != null ? lidJid.user() + "@lid" : creds.meLid;
+        } else {
+            id.jawa.util.Jid myJid = id.jawa.util.Jid.parse(creds.meJid);
+            if (myJid == null) {
+                return java.util.concurrent.CompletableFuture.failedFuture(
+                    new IllegalStateException("creds.meJid invalid"));
+            }
+            ownBareJid = myJid.user() + "@" + id.jawa.util.Jid.SERVER_WHATSAPP;
         }
-        String ownBareJid = myJid.user() + "@" + id.jawa.util.Jid.SERVER_WHATSAPP;
         boolean isSelfSend = toUser.equals(ownBareJid);
         java.util.List<String> queryTargets = isSelfSend
             ? java.util.List.of(toUser)
             : java.util.List.of(toUser, ownBareJid);
+
+        id.jawa.util.Jid ownJidObj = id.jawa.util.Jid.parse(ownBareJid);
+        String ownUser = ownJidObj != null ? ownJidObj.user() : "";
 
         return queryDevices(queryTargets).thenCompose(devicesMap -> {
             java.util.List<String> allDeviceJids = new java.util.ArrayList<>();
@@ -730,7 +739,7 @@ public final class JaWaClient implements AutoCloseable {
                 MessageSender.Result result = MessageSender.buildStanza(
                     protocolStore, creds, msgId, toUser, allDeviceJids, msg);
                 send(result.stanza());
-                int ownCount = countOwnDevices(allDeviceJids, myJid.user());
+                int ownCount = countOwnDevices(allDeviceJids, ownUser);
                 LOG.info("Sent message id={} to={} ({} device(s) total, {} own-companion DSM)",
                     msgId, toUser, allDeviceJids.size(),
                     Math.max(0, ownCount - 1)); // -1 for the sender device, which is skipped
