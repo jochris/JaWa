@@ -141,6 +141,120 @@ public final class MessageSender {
     }
 
     /**
+     * Build a stanza with dual-identity support: route via {@code wireDeviceJids} (PN)
+     * but encrypt using Signal sessions from {@code encryptionDeviceJids} (LID).
+     *
+     * <p>This mirrors whatsmeow's {@code encryptMessageForDeviceAndWrap} pattern where
+     * {@code <to jid="PN-device">} is used for routing but the Signal cipher uses
+     * the LID address.
+     */
+    public static Result buildDualIdentityStanza(JaWaProtocolStore store,
+                                                  AuthCreds creds,
+                                                  String msgId,
+                                                  String recipientBareJid,
+                                                  List<String> wireDeviceJids,
+                                                  List<String> encryptionDeviceJids,
+                                                  Wa.Message message) {
+        Objects.requireNonNull(store);
+        Objects.requireNonNull(creds);
+        Objects.requireNonNull(message);
+
+        Jid myJid = Jid.parse(creds.meJid);
+        if (myJid == null) throw new IllegalStateException("creds.meJid invalid");
+        SignalProtocolAddress myAddr = new SignalProtocolAddress(myJid.user(), myJid.device());
+        String ownUser = myJid.user();
+
+        // Also check own LID to skip own LID device
+        String ownLidUser = null;
+        if (creds.meLid != null && !creds.meLid.isBlank()) {
+            Jid lidJid = Jid.parse(creds.meLid);
+            if (lidJid != null) ownLidUser = lidJid.user();
+        }
+
+        byte[] msgPadded = MessageEncoder.encode(message);
+        byte[] dsmPadded = null;
+
+        List<BinaryNode> participants = new ArrayList<>();
+        Map<SignalProtocolAddress, Integer> typeMap = new HashMap<>();
+        boolean includeDeviceIdentity = false;
+
+        // Build a mapping from wire device -> encryption device
+        // They should be parallel lists of the same size
+        for (int i = 0; i < wireDeviceJids.size(); i++) {
+            String wireJid = wireDeviceJids.get(i);
+            String encJid = (i < encryptionDeviceJids.size()) ? encryptionDeviceJids.get(i) : wireJid;
+
+            Jid wireParsed = Jid.parse(wireJid);
+            Jid encParsed = Jid.parse(encJid);
+            if (wireParsed == null || encParsed == null) continue;
+
+            SignalProtocolAddress encAddr = SessionBootstrap.addressFor(encParsed);
+            if (encAddr.equals(myAddr)) continue; // skip the exact sender device
+
+            // Also skip own LID device
+            if (ownLidUser != null && encParsed.user().equals(ownLidUser)
+                    && encParsed.device() == myJid.device()) continue;
+
+            byte[] plaintext;
+            boolean isOwnDevice = wireParsed.user().equals(ownUser)
+                    || (ownLidUser != null && encParsed.user().equals(ownLidUser));
+            if (isOwnDevice) {
+                if (dsmPadded == null) {
+                    dsmPadded = MessageEncoder.encode(
+                        MessageEncoder.deviceSent(recipientBareJid, message));
+                }
+                plaintext = dsmPadded;
+            } else {
+                plaintext = msgPadded;
+            }
+
+            try {
+                SessionCipher cipher = new SessionCipher(store, encAddr);
+                CiphertextMessage ct = cipher.encrypt(plaintext);
+                String type = ct.getType() == CiphertextMessage.PREKEY_TYPE ? "pkmsg" : "msg";
+                if ("pkmsg".equals(type)) includeDeviceIdentity = true;
+                typeMap.put(encAddr, ct.getType());
+
+                BinaryNode enc = new BinaryNode("enc",
+                    Map.of("v", "2", "type", type),
+                    ct.serialize());
+                // Wire identity: use the PN device JID for the <to jid="..."> node
+                BinaryNode to = new BinaryNode("to",
+                    Map.of("jid", wireJid),
+                    List.of(enc));
+                participants.add(to);
+            } catch (UntrustedIdentityException e) {
+                LOG.warn("Encrypt failed for {} (enc={}): {}", wireJid, encJid, e.toString());
+            }
+        }
+
+        if (participants.isEmpty()) {
+            throw new IllegalStateException("No recipients could be encrypted for; "
+                + "did you bootstrap sessions first?");
+        }
+
+        List<BinaryNode> outer = new ArrayList<>();
+        outer.add(new BinaryNode("participants", Map.of(), participants));
+        if (includeDeviceIdentity && creds.account != null) {
+            byte[] deviceIdentity = encodeDeviceIdentityForSend(creds.account);
+            outer.add(new BinaryNode("device-identity", Map.of(), deviceIdentity));
+        }
+        BinaryNode biz = BizNode.buildIfNeeded(message);
+        if (biz != null) outer.add(biz);
+
+        java.util.Map<String, String> attrs = new java.util.HashMap<>();
+        attrs.put("to", recipientBareJid);
+        attrs.put("id", msgId);
+        attrs.put("type", "text");
+        if (recipientBareJid.endsWith("@lid")) {
+            attrs.put("addressing_mode", "lid");
+        }
+        BinaryNode stanza = new BinaryNode("message", attrs, outer);
+
+        return new Result(stanza, typeMap);
+    }
+
+    /**
      * Re-serialise {@link Wa.ADVSignedDeviceIdentity} without {@code accountSignatureKey}.
      * Package-visible so {@link GroupSender} can include it in the group-send stanza.
      */

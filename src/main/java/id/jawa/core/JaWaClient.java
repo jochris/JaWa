@@ -708,17 +708,22 @@ public final class JaWaClient implements AutoCloseable {
      */
     public java.util.concurrent.CompletableFuture<String>
             sendDmMessage(String toUser, id.jawa.proto.Wa.Message msg) {
-        String resolvedToUser = toUser;
+        // Resolve LID -> PN for routing, but keep the original LID for encryption
+        String routingJid = toUser;
+        String encryptionLid = null; // non-null only when we have a LID->PN mapping
         if (toUser != null && toUser.endsWith("@lid")) {
             String mappedPn = LID_TO_PN_MAP.get(toUser);
             if (mappedPn != null && !mappedPn.isEmpty()) {
-                LOG.debug("Rotating outgoing DM JID from LID {} to PN {}", toUser, mappedPn);
-                resolvedToUser = mappedPn;
+                LOG.debug("DM dual-identity: route via PN {} but encrypt via LID {}", mappedPn, toUser);
+                routingJid = mappedPn;
+                encryptionLid = toUser;
             }
         }
-        final String finalToUser = resolvedToUser;
+        final String finalRoutingJid = routingJid;
+        final String finalEncryptionLid = encryptionLid;
+
         String ownBareJid;
-        if (finalToUser.endsWith("@lid") && creds.meLid != null && !creds.meLid.isBlank()) {
+        if (finalRoutingJid.endsWith("@lid") && creds.meLid != null && !creds.meLid.isBlank()) {
             id.jawa.util.Jid lidJid = id.jawa.util.Jid.parse(creds.meLid);
             ownBareJid = lidJid != null ? lidJid.user() + "@lid" : creds.meLid;
         } else {
@@ -729,10 +734,10 @@ public final class JaWaClient implements AutoCloseable {
             }
             ownBareJid = myJid.user() + "@" + id.jawa.util.Jid.SERVER_WHATSAPP;
         }
-        boolean isSelfSend = finalToUser.equals(ownBareJid);
+        boolean isSelfSend = finalRoutingJid.equals(ownBareJid);
         java.util.List<String> queryTargets = isSelfSend
-            ? java.util.List.of(finalToUser)
-            : java.util.List.of(finalToUser, ownBareJid);
+            ? java.util.List.of(finalRoutingJid)
+            : java.util.List.of(finalRoutingJid, ownBareJid);
 
         id.jawa.util.Jid ownJidObj = id.jawa.util.Jid.parse(ownBareJid);
         String ownUser = ownJidObj != null ? ownJidObj.user() : "";
@@ -746,15 +751,42 @@ public final class JaWaClient implements AutoCloseable {
                     allDeviceJids.add(d.asJid(base.user(), base.server()).asString());
                 }
             }
-            return fetchBundlesAndInstallSessions(allDeviceJids).thenApply(addresses -> {
+
+            // Build LID device JIDs for encryption (Signal session addresses)
+            // and keep PN device JIDs for wire routing
+            java.util.List<String> encryptionDeviceJids;
+            if (finalEncryptionLid != null) {
+                // Map PN devices to their LID equivalents for encryption
+                id.jawa.util.Jid lidBase = id.jawa.util.Jid.parse(finalEncryptionLid);
+                id.jawa.util.Jid pnBase = id.jawa.util.Jid.parse(finalRoutingJid);
+                encryptionDeviceJids = new java.util.ArrayList<>();
+                for (String dj : allDeviceJids) {
+                    id.jawa.util.Jid djParsed = id.jawa.util.Jid.parse(dj);
+                    if (djParsed != null && pnBase != null && djParsed.user().equals(pnBase.user())) {
+                        // This is a recipient PN device -> map to LID for encryption
+                        String lidDeviceJid = lidBase.user() + (djParsed.device() != 0 ? ":" + djParsed.device() : "") + "@lid";
+                        encryptionDeviceJids.add(lidDeviceJid);
+                    } else {
+                        // Own device or other -> keep as-is
+                        encryptionDeviceJids.add(dj);
+                    }
+                }
+                LOG.debug("Encryption device JIDs (LID): {}", encryptionDeviceJids);
+            } else {
+                encryptionDeviceJids = allDeviceJids;
+            }
+
+            // Fetch bundles and install sessions for the encryption identities (LID)
+            return fetchBundlesAndInstallSessions(encryptionDeviceJids).thenApply(addresses -> {
                 String msgId = newIqId().toUpperCase();
-                MessageSender.Result result = MessageSender.buildStanza(
-                    protocolStore, creds, msgId, finalToUser, allDeviceJids, msg);
+                MessageSender.Result result = MessageSender.buildDualIdentityStanza(
+                    protocolStore, creds, msgId, finalRoutingJid,
+                    allDeviceJids, encryptionDeviceJids, msg);
                 send(result.stanza());
                 int ownCount = countOwnDevices(allDeviceJids, ownUser);
                 LOG.info("Sent message id={} to={} ({} device(s) total, {} own-companion DSM)",
-                    msgId, finalToUser, allDeviceJids.size(),
-                    Math.max(0, ownCount - 1)); // -1 for the sender device, which is skipped
+                    msgId, finalRoutingJid, allDeviceJids.size(),
+                    Math.max(0, ownCount - 1));
                 return msgId;
             });
         });
