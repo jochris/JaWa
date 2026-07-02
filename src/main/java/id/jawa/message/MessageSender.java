@@ -134,12 +134,6 @@ public final class MessageSender {
         attrs.put("type", "text");
         if (recipientBareJid.endsWith("@lid")) {
             attrs.put("addressing_mode", "lid");
-            if (creds.meLid != null && !creds.meLid.isBlank()) {
-                Jid lidJid = Jid.parse(creds.meLid);
-                if (lidJid != null) {
-                    attrs.put("from", lidJid.user() + "@lid");
-                }
-            }
         }
         BinaryNode stanza = new BinaryNode("message", attrs, outer);
 

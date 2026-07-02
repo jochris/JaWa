@@ -179,9 +179,6 @@ public final class GroupSender {
         attrs.put("to", groupJid);
         attrs.put("id", msgId);
         attrs.put("type", "text");
-        if (useLid) {
-            attrs.put("from", myJid.user() + "@lid");
-        }
         BinaryNode stanza = new BinaryNode("message", attrs, outer);
 
         return new Result(stanza, typeMap, participants.size());
