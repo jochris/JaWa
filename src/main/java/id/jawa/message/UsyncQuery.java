@@ -52,7 +52,8 @@ public final class UsyncQuery {
             ),
             List.of(
                 new BinaryNode("query", Map.of(), List.of(
-                    new BinaryNode("devices", Map.of("version", "2"), null)
+                    new BinaryNode("devices", Map.of("version", "2"), null),
+                    new BinaryNode("lid", Map.of(), null)
                 )),
                 new BinaryNode("list", Map.of(), userNodes)
             ));
@@ -85,6 +86,25 @@ public final class UsyncQuery {
         for (BinaryNode user : list.children("user")) {
             String jid = user.attr("jid");
             if (jid == null) continue;
+
+            BinaryNode lidNode = user.child("lid");
+            if (lidNode != null) {
+                String lidVal = lidNode.attr("val");
+                if (lidVal != null && !lidVal.isBlank()) {
+                    Jid jidParsed = Jid.parse(jid);
+                    Jid valParsed = Jid.parse(lidVal);
+                    if (jidParsed != null && valParsed != null) {
+                        String jidBare = jidParsed.user() + "@" + jidParsed.server();
+                        String valBare = valParsed.user() + "@" + valParsed.server();
+                        if (jidBare.endsWith("@lid") && valBare.endsWith("@s.whatsapp.net")) {
+                            id.jawa.core.JaWaClient.LID_TO_PN_MAP.put(jidBare, valBare);
+                        } else if (jidBare.endsWith("@s.whatsapp.net") && valBare.endsWith("@lid")) {
+                            id.jawa.core.JaWaClient.LID_TO_PN_MAP.put(valBare, jidBare);
+                        }
+                    }
+                }
+            }
+
             BinaryNode devices = user.child("devices");
             BinaryNode deviceList = devices == null ? null : devices.child("device-list");
             List<DeviceInfo> dl = new ArrayList<>();

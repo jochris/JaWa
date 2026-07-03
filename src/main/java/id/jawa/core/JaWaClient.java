@@ -708,22 +708,8 @@ public final class JaWaClient implements AutoCloseable {
      */
     public java.util.concurrent.CompletableFuture<String>
             sendDmMessage(String toUser, id.jawa.proto.Wa.Message msg) {
-        // Resolve LID -> PN for routing, but keep the original LID for encryption
-        String routingJid = toUser;
-        String encryptionLid = null; // non-null only when we have a LID->PN mapping
-        if (toUser != null && toUser.endsWith("@lid")) {
-            String mappedPn = LID_TO_PN_MAP.get(toUser);
-            if (mappedPn != null && !mappedPn.isEmpty()) {
-                LOG.debug("DM dual-identity: route via PN {} but encrypt via LID {}", mappedPn, toUser);
-                routingJid = mappedPn;
-                encryptionLid = toUser;
-            }
-        }
-        final String finalRoutingJid = routingJid;
-        final String finalEncryptionLid = encryptionLid;
-
         String ownBareJid;
-        if (finalRoutingJid.endsWith("@lid") && creds.meLid != null && !creds.meLid.isBlank()) {
+        if (toUser != null && toUser.endsWith("@lid") && creds.meLid != null && !creds.meLid.isBlank()) {
             id.jawa.util.Jid lidJid = id.jawa.util.Jid.parse(creds.meLid);
             ownBareJid = lidJid != null ? lidJid.user() + "@lid" : creds.meLid;
         } else {
@@ -734,49 +720,54 @@ public final class JaWaClient implements AutoCloseable {
             }
             ownBareJid = myJid.user() + "@" + id.jawa.util.Jid.SERVER_WHATSAPP;
         }
-        boolean isSelfSend = finalRoutingJid.equals(ownBareJid);
+        boolean isSelfSend = toUser != null && toUser.equals(ownBareJid);
         java.util.List<String> queryTargets = isSelfSend
-            ? java.util.List.of(finalRoutingJid)
-            : java.util.List.of(finalRoutingJid, ownBareJid);
+            ? java.util.List.of(toUser)
+            : java.util.List.of(toUser, ownBareJid);
 
         id.jawa.util.Jid ownJidObj = id.jawa.util.Jid.parse(ownBareJid);
         String ownUser = ownJidObj != null ? ownJidObj.user() : "";
+        id.jawa.util.Jid targetJidObj = id.jawa.util.Jid.parse(toUser);
 
         return queryDevices(queryTargets).thenCompose(devicesMap -> {
+            String resolvedRoutingJid = toUser;
+            String resolvedEncryptionLid = null;
+            if (toUser != null && toUser.endsWith("@lid")) {
+                String mappedPn = LID_TO_PN_MAP.get(toUser);
+                if (mappedPn != null && !mappedPn.isEmpty()) {
+                    LOG.debug("DM dual-identity resolved: route via PN {} but encrypt via LID {}", mappedPn, toUser);
+                    resolvedRoutingJid = mappedPn;
+                    resolvedEncryptionLid = toUser;
+                }
+            }
+            final String finalRoutingJid = resolvedRoutingJid;
+            final String finalEncryptionLid = resolvedEncryptionLid;
+
+            id.jawa.util.Jid pnBase = id.jawa.util.Jid.parse(finalRoutingJid);
+            id.jawa.util.Jid lidBase = finalEncryptionLid != null ? id.jawa.util.Jid.parse(finalEncryptionLid) : null;
+
             java.util.List<String> allDeviceJids = new java.util.ArrayList<>();
+            java.util.List<String> encryptionDeviceJids = new java.util.ArrayList<>();
+
             for (var entry : devicesMap.entrySet()) {
                 id.jawa.util.Jid base = id.jawa.util.Jid.parse(entry.getKey());
                 if (base == null) continue;
-                for (var d : entry.getValue()) {
-                    allDeviceJids.add(d.asJid(base.user(), base.server()).asString());
-                }
-            }
+                boolean isTarget = targetJidObj != null && base.user().equals(targetJidObj.user());
 
-            // Build LID device JIDs for encryption (Signal session addresses)
-            // and keep PN device JIDs for wire routing
-            java.util.List<String> encryptionDeviceJids;
-            if (finalEncryptionLid != null) {
-                // Map PN devices to their LID equivalents for encryption
-                id.jawa.util.Jid lidBase = id.jawa.util.Jid.parse(finalEncryptionLid);
-                id.jawa.util.Jid pnBase = id.jawa.util.Jid.parse(finalRoutingJid);
-                encryptionDeviceJids = new java.util.ArrayList<>();
-                for (String dj : allDeviceJids) {
-                    id.jawa.util.Jid djParsed = id.jawa.util.Jid.parse(dj);
-                    if (djParsed != null && pnBase != null && djParsed.user().equals(pnBase.user())) {
-                        // This is a recipient PN device -> map to LID for encryption
-                        String lidDeviceJid = lidBase.user() + (djParsed.device() != 0 ? ":" + djParsed.device() : "") + "@lid";
-                        encryptionDeviceJids.add(lidDeviceJid);
+                for (var d : entry.getValue()) {
+                    if (isTarget && finalEncryptionLid != null && pnBase != null && lidBase != null) {
+                        String wireJid = pnBase.user() + (d.id() != 0 ? ":" + d.id() : "") + "@" + pnBase.server();
+                        String encJid = lidBase.user() + (d.id() != 0 ? ":" + d.id() : "") + "@" + lidBase.server();
+                        allDeviceJids.add(wireJid);
+                        encryptionDeviceJids.add(encJid);
                     } else {
-                        // Own device or other -> keep as-is
-                        encryptionDeviceJids.add(dj);
+                        String jidStr = d.asJid(base.user(), base.server()).asString();
+                        allDeviceJids.add(jidStr);
+                        encryptionDeviceJids.add(jidStr);
                     }
                 }
-                LOG.debug("Encryption device JIDs (LID): {}", encryptionDeviceJids);
-            } else {
-                encryptionDeviceJids = allDeviceJids;
             }
 
-            // Fetch bundles and install sessions for the encryption identities (LID)
             return fetchBundlesAndInstallSessions(encryptionDeviceJids).thenApply(addresses -> {
                 String msgId = newIqId().toUpperCase();
                 MessageSender.Result result = MessageSender.buildDualIdentityStanza(
