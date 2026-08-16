@@ -89,13 +89,6 @@
             <version>${protobuf.version}</version>
         </dependency>
 
-        <!-- WebSocket Client -->
-        <dependency>
-            <groupId>com.neovisionaries</groupId>
-            <artifactId>nv-websocket-client</artifactId>
-            <version>${websocket.version}</version>
-        </dependency>
-
         <!-- ZXing (QR Code generation for pairing) -->
         <dependency>
             <groupId>com.google.zxing</groupId>

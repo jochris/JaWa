@@ -1,246 +1,134 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package id.jawa.binary;
 
-import id.jawa.util.Jid;
+import id.jawa.types.Jid;
 
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.zip.InflaterInputStream;
 
 /**
- * Decodes the WhatsApp binary wire format back into {@link BinaryNode} trees.
- *
- * <p>Ports {@code WABinary/decode.ts} (Baileys) and {@code binary/decoder.go} (whatsmeow).
- *
- * <p>The very first byte is a flag: {@code 0x00 = raw}, bit 1 set ({@code & 0x02})
- * indicates the remainder is zlib-deflated (RFC 1950) and is transparently inflated.
+ * Decodes WhatsApp binary protocol bytes into a {@link BinaryNode}, directly matching whatsmeow binary.decoder.
  */
 public final class BinaryDecoder {
 
-    private final byte[] data;
-    private int pos;
+    public BinaryNode decode(byte[] data) {
+        if (data == null || data.length == 0) return null;
+        ByteBuffer buf = ByteBuffer.wrap(data);
 
-    private BinaryDecoder(byte[] data) { this.data = data; this.pos = 0; }
+        // Skip leading zero byte if present
+        if (buf.hasRemaining() && buf.get(0) == 0) {
+            buf.get();
+        }
 
-    /** One-shot decode. */
-    public static BinaryNode decode(byte[] payload) {
-        if (payload == null || payload.length == 0) {
-            throw new IllegalArgumentException("empty payload");
-        }
-        byte flag = payload[0];
-        byte[] body;
-        if ((flag & WaTags.FLAG_DEFLATE) != 0) {
-            try (InflaterInputStream in = new InflaterInputStream(
-                    new ByteArrayInputStream(payload, 1, payload.length - 1))) {
-                ByteArrayOutputStream out = new ByteArrayOutputStream(payload.length * 2);
-                in.transferTo(out);
-                body = out.toByteArray();
-            } catch (IOException e) {
-                throw new IllegalStateException("zlib inflate failed", e);
-            }
-        } else {
-            body = new byte[payload.length - 1];
-            System.arraycopy(payload, 1, body, 0, body.length);
-        }
-        return new BinaryDecoder(body).readNode();
+        return readNode(buf);
     }
 
-    // ---- node ----
+    private BinaryNode readNode(ByteBuffer buf) {
+        int listSize = readListSize(buf);
+        String tag = readString(buf);
+        if (tag == null) return null;
 
-    private BinaryNode readNode() {
-        int listSize = readListSize(readByte());
-        if (listSize == 0) throw new IllegalStateException("invalid node: empty list");
-        String tag = readString(readByte());
-        if (tag == null || tag.isEmpty()) throw new IllegalStateException("invalid node: empty tag");
-
-        int attrCount = (listSize - 1) >> 1;
-        Map<String, String> attrs = attrCount == 0 ? Map.of() : new HashMap<>(attrCount * 2);
+        int attrCount = (listSize - 1) / 2;
+        Map<String, Object> attrs = new LinkedHashMap<>(attrCount);
         for (int i = 0; i < attrCount; i++) {
-            String k = readString(readByte());
-            String v = readString(readByte());
-            attrs.put(k, v);
+            String key = readString(buf);
+            Object val = readContent(buf);
+            if (key != null && val != null) attrs.put(key, val);
         }
 
         Object content = null;
         if (listSize % 2 == 0) {
-            int tagByte = readByte();
-            content = switch (tagByte) {
-                case WaTags.LIST_EMPTY, WaTags.LIST_8, WaTags.LIST_16 -> readList(tagByte);
-                case WaTags.BINARY_8  -> readBytes(readByte());
-                case WaTags.BINARY_20 -> readBytes(readInt20());
-                case WaTags.BINARY_32 -> readBytes(readInt(4));
-                default -> readString(tagByte);
-            };
+            int tagType = buf.get() & 0xFF;
+            if (isListTag(tagType)) {
+                int childCount = readListSizeWithTag(buf, tagType);
+                List<BinaryNode> children = new ArrayList<>(childCount);
+                for (int i = 0; i < childCount; i++) {
+                    children.add(readNode(buf));
+                }
+                content = children;
+            } else if (tagType == WaTags.BINARY_8 || tagType == WaTags.BINARY_20 || tagType == WaTags.BINARY_32) {
+                content = readBytesWithTag(buf, tagType);
+            } else {
+                buf.position(buf.position() - 1);
+                content = readContent(buf);
+            }
         }
+
         return new BinaryNode(tag, attrs, content);
     }
 
-    private List<BinaryNode> readList(int tag) {
-        int size = readListSize(tag);
-        List<BinaryNode> items = new ArrayList<>(size);
-        for (int i = 0; i < size; i++) items.add(readNode());
-        return items;
+    private Object readContent(ByteBuffer buf) {
+        if (!buf.hasRemaining()) return null;
+        int tag = buf.get() & 0xFF;
+
+        if (tag == WaTags.LIST_EMPTY) return null;
+        if (tag >= 1 && tag < WaTokens.SINGLE.length) {
+            return WaTokens.SINGLE[tag];
+        }
+        if (tag >= WaTags.DICTIONARY_0 && tag <= WaTags.DICTIONARY_3) {
+            int dict = tag - WaTags.DICTIONARY_0;
+            int idx = buf.get() & 0xFF;
+            if (dict < WaTokens.DOUBLE.length && idx < WaTokens.DOUBLE[dict].length) {
+                return WaTokens.DOUBLE[dict][idx];
+            }
+        }
+        if (tag == WaTags.JID_PAIR) {
+            String user = readString(buf);
+            String server = readString(buf);
+            return Jid.of(user != null ? user : "", server != null ? server : Jid.DEFAULT_USER_SERVER);
+        }
+        if (tag == WaTags.AD_JID) {
+            int agent = buf.get() & 0xFF;
+            int device = buf.get() & 0xFF;
+            String user = readString(buf);
+            return Jid.ofAD(user != null ? user : "", agent, device);
+        }
+        if (tag == WaTags.BINARY_8 || tag == WaTags.BINARY_20 || tag == WaTags.BINARY_32) {
+            return readBytesWithTag(buf, tag);
+        }
+
+        return null;
     }
 
-    private int readListSize(int tag) {
+    private int readListSize(ByteBuffer buf) {
+        int tag = buf.get() & 0xFF;
+        return readListSizeWithTag(buf, tag);
+    }
+
+    private int readListSizeWithTag(ByteBuffer buf, int tag) {
         return switch (tag) {
             case WaTags.LIST_EMPTY -> 0;
-            case WaTags.LIST_8     -> readByte();
-            case WaTags.LIST_16    -> readInt(2);
-            default -> throw new IllegalStateException("invalid list tag: " + tag);
+            case WaTags.LIST_8 -> buf.get() & 0xFF;
+            case WaTags.LIST_16 -> buf.getShort() & 0xFFFF;
+            default -> throw new IllegalArgumentException("invalid list tag: " + tag);
         };
     }
 
-    // ---- string ----
+    private boolean isListTag(int tag) {
+        return tag == WaTags.LIST_EMPTY || tag == WaTags.LIST_8 || tag == WaTags.LIST_16;
+    }
 
-    private String readString(int tag) {
-        if (tag >= 1 && tag < WaTokens.SINGLE.length) return WaTokens.SINGLE[tag];
-        return switch (tag) {
-            case WaTags.LIST_EMPTY  -> "";
-            case WaTags.DICTIONARY_0, WaTags.DICTIONARY_1, WaTags.DICTIONARY_2, WaTags.DICTIONARY_3 ->
-                getTokenDouble(tag - WaTags.DICTIONARY_0, readByte());
-            case WaTags.BINARY_8  -> readStringFromChars(readByte());
-            case WaTags.BINARY_20 -> readStringFromChars(readInt20());
-            case WaTags.BINARY_32 -> readStringFromChars(readInt(4));
-            case WaTags.JID_PAIR    -> readJidPair();
-            case WaTags.AD_JID      -> readAdJid();
-            case WaTags.FB_JID      -> readFbJid();
-            case WaTags.INTEROP_JID -> readInteropJid();
-            case WaTags.HEX_8, WaTags.NIBBLE_8 -> readPacked8(tag);
-            default -> throw new IllegalStateException("invalid string tag: " + tag);
+    private String readString(ByteBuffer buf) {
+        Object res = readContent(buf);
+        if (res instanceof String s) return s;
+        if (res instanceof Jid j) return j.toString();
+        if (res instanceof byte[] b) return new String(b, StandardCharsets.UTF_8);
+        return null;
+    }
+
+    private byte[] readBytesWithTag(ByteBuffer buf, int tag) {
+        int len = switch (tag) {
+            case WaTags.BINARY_8 -> buf.get() & 0xFF;
+            case WaTags.BINARY_20 -> ((buf.get() & 0x0F) << 16) | ((buf.get() & 0xFF) << 8) | (buf.get() & 0xFF);
+            case WaTags.BINARY_32 -> buf.getInt();
+            default -> throw new IllegalArgumentException("invalid binary tag: " + tag);
         };
-    }
-
-    private String getTokenDouble(int dict, int index) {
-        if (dict < 0 || dict >= WaTokens.DOUBLE.length) {
-            throw new IllegalStateException("invalid double-token dict: " + dict);
-        }
-        String[] table = WaTokens.DOUBLE[dict];
-        if (index < 0 || index >= table.length) {
-            throw new IllegalStateException("invalid double-token index: " + index);
-        }
-        return table[index];
-    }
-
-    private String readStringFromChars(int n) {
-        byte[] b = readBytes(n);
-        return new String(b, StandardCharsets.UTF_8);
-    }
-
-    // ---- packed ----
-
-    private String readPacked8(int tag) {
-        int startByte = readByte();
-        int pairs = startByte & 0x7F;
-        StringBuilder sb = new StringBuilder(pairs * 2);
-        for (int i = 0; i < pairs; i++) {
-            int b = readByte();
-            sb.append((char) unpackByte(tag, (b & 0xF0) >> 4));
-            sb.append((char) unpackByte(tag, b & 0x0F));
-        }
-        if ((startByte & 0x80) != 0) sb.setLength(sb.length() - 1);
-        return sb.toString();
-    }
-
-    private static int unpackByte(int tag, int v) {
-        return switch (tag) {
-            case WaTags.NIBBLE_8 -> unpackNibble(v);
-            case WaTags.HEX_8    -> unpackHex(v);
-            default -> throw new IllegalStateException("invalid packed tag: " + tag);
-        };
-    }
-
-    private static int unpackNibble(int v) {
-        if (v >= 0 && v <= 9) return '0' + v;
-        return switch (v) {
-            case 10 -> '-';
-            case 11 -> '.';
-            case 15 -> '\0';
-            default -> throw new IllegalStateException("invalid nibble: " + v);
-        };
-    }
-
-    private static int unpackHex(int v) {
-        if (v >= 0 && v <= 9)  return '0' + v;
-        if (v >= 10 && v < 16) return 'A' + (v - 10);
-        throw new IllegalStateException("invalid hex: " + v);
-    }
-
-    // ---- jid ----
-
-    private String readJidPair() {
-        String user = readString(readByte());
-        String server = readString(readByte());
-        if (server == null) throw new IllegalStateException("invalid jid pair");
-        return (user == null ? "" : user) + "@" + server;
-    }
-
-    private String readAdJid() {
-        int domainType = readByte();
-        int device = readByte();
-        String user = readString(readByte());
-        String server = Jid.serverForDomain(domainType, Jid.SERVER_WHATSAPP);
-        StringBuilder sb = new StringBuilder();
-        sb.append(user == null ? "" : user);
-        if (device != 0) sb.append(':').append(device);
-        sb.append('@').append(server);
-        return sb.toString();
-    }
-
-    private String readFbJid() {
-        String user = readString(readByte());
-        int device = readInt(2);
-        String server = readString(readByte());
-        return user + ":" + device + "@" + server;
-    }
-
-    private String readInteropJid() {
-        String user = readString(readByte());
-        int device = readInt(2);
-        int integrator = readInt(2);
-        String server = "interop";
-        int mark = pos;
-        try {
-            server = readString(readByte());
-        } catch (RuntimeException e) {
-            pos = mark;
-        }
-        return integrator + "-" + user + ":" + device + "@" + server;
-    }
-
-    // ---- low-level ----
-
-    private int readByte() {
-        if (pos >= data.length) throw new IllegalStateException("end of stream");
-        return data[pos++] & 0xFF;
-    }
-
-    private byte[] readBytes(int n) {
-        if (pos + n > data.length) throw new IllegalStateException("end of stream");
-        byte[] out = new byte[n];
-        System.arraycopy(data, pos, out, 0, n);
-        pos += n;
-        return out;
-    }
-
-    private int readInt(int n) {
-        int v = 0;
-        for (int i = 0; i < n; i++) {
-            v = (v << 8) | readByte();
-        }
-        return v;
-    }
-
-    private int readInt20() {
-        int b0 = readByte();
-        int b1 = readByte();
-        int b2 = readByte();
-        return ((b0 & 0x0F) << 16) | (b1 << 8) | b2;
+        byte[] b = new byte[len];
+        buf.get(b);
+        return b;
     }
 }
