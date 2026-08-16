@@ -93,6 +93,26 @@ public final class Crypto {
         }
     }
 
+    public static byte[] aesCtrEncrypt(byte[] key, byte[] iv, byte[] plaintext) {
+        try {
+            Cipher cipher = Cipher.getInstance("AES/CTR/NoPadding");
+            cipher.init(Cipher.ENCRYPT_MODE, new SecretKeySpec(key, "AES"), new IvParameterSpec(iv));
+            return cipher.doFinal(plaintext);
+        } catch (GeneralSecurityException e) {
+            throw new IllegalStateException("AES-CTR encryption failed", e);
+        }
+    }
+
+    public static byte[] pbkdf2HmacSha256(String password, byte[] salt, int iterations, int keyLengthBytes) {
+        try {
+            javax.crypto.SecretKeyFactory skf = javax.crypto.SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
+            javax.crypto.spec.PBEKeySpec spec = new javax.crypto.spec.PBEKeySpec(password.toCharArray(), salt, iterations, keyLengthBytes * 8);
+            return skf.generateSecret(spec).getEncoded();
+        } catch (GeneralSecurityException e) {
+            throw new IllegalStateException("PBKDF2 failed", e);
+        }
+    }
+
     public record KeyPair(byte[] pubKey, byte[] privKey) {}
 
     public static KeyPair generateCurve25519KeyPair() {
