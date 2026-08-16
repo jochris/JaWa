@@ -123,15 +123,15 @@ public final class BinaryEncoder {
             out.write(WaTags.AD_JID);
             out.write(jid.actualAgent());
             out.write(jid.device());
-            writeString(out, jid.user());
+            writeStringRaw(out, jid.user());
         } else {
             out.write(WaTags.JID_PAIR);
             if (jid.user().isEmpty()) {
                 out.write(WaTags.LIST_EMPTY);
             } else {
-                writeContent(out, jid.user());
+                writeStringRaw(out, jid.user());
             }
-            writeContent(out, jid.server());
+            writeStringRaw(out, jid.server());
         }
     }
 
