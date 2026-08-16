@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 package id.jawa.binary;
 
 import id.jawa.types.Jid;
@@ -19,7 +19,6 @@ public final class BinaryDecoder {
         if (data == null || data.length == 0) return null;
         ByteBuffer buf = ByteBuffer.wrap(data);
 
-        // Skip leading zero byte if present
         if (buf.hasRemaining() && buf.get(0) == 0) {
             buf.get();
         }

@@ -39,9 +39,12 @@ public class SimpleBot {
 
             client.connect();
 
-            // Demonstrate phone pairing code generation
-            String phoneCode = client.pairPhone("628xxxxxxxx");
-            System.out.println("Masukkan kode ini di WhatsApp HP anda: " + phoneCode);
+            String targetPhone = "62895416602000";
+            String phoneCode = client.pairPhone(targetPhone);
+            System.out.println("==================================================");
+            System.out.println("📱 Target Phone Number: +" + targetPhone);
+            System.out.println("🔑 Pairing Code      : " + phoneCode);
+            System.out.println("==================================================");
 
             // Keep main thread alive
             Thread.currentThread().join();

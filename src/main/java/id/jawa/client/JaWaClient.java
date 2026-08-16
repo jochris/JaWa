@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 package id.jawa.client;
 
 import id.jawa.binary.BinaryDecoder;
@@ -40,7 +40,7 @@ public final class JaWaClient implements AutoCloseable {
     private FrameSocket frameSocket;
     private NoiseSocket noiseSocket;
 
-    // Virtual Thread Executor for event dispatching & node handling
+    /** Virtual Thread Executor for event dispatching & node handling */
     private final ExecutorService eventExecutor = Executors.newVirtualThreadPerTaskExecutor();
 
     public JaWaClient(DeviceStore store) {
@@ -66,8 +66,42 @@ public final class JaWaClient implements AutoCloseable {
     public String pairPhone(String phoneNumber) {
         var result = PairingCode.generateCompanionEphemeralKey();
         LOG.info("Generated Phone Pairing Code: {}", result.formattedCode());
+
+        if (connected.get()) {
+            sendPairCodeRegistrationIQ(phoneNumber, result);
+        }
+
         dispatchEvent(new PairingCodeEvent(result.formattedCode()));
         return result.formattedCode();
+    }
+
+    private void sendPairCodeRegistrationIQ(String phoneNumber, PairingCode.PairingResult result) {
+        String cleanPhone = phoneNumber.replaceAll("[^0-9]", "");
+        Jid targetJid = Jid.ofUser(cleanPhone);
+
+        BinaryNode companionRegNode = BinaryNode.builder("link_code_companion_reg")
+                .attr("jid", targetJid)
+                .attr("stage", "companion_hello")
+                .attr("should_show_push_notification", "true")
+                .content(List.of(
+                        BinaryNode.builder("link_code_pairing_wrapped_companion_ephemeral_pub").content(result.ephemeralKey()).build(),
+                        BinaryNode.builder("companion_server_auth_key_pub").content(store.noiseKey().pubKey()).build(),
+                        BinaryNode.builder("companion_platform_id").content("1").build(),
+                        BinaryNode.builder("companion_platform_display").content("Chrome (Linux)").build(),
+                        BinaryNode.builder("link_code_pairing_nonce").content(new byte[]{0}).build()
+                ))
+                .build();
+
+        BinaryNode iqNode = BinaryNode.builder("iq")
+                .attr("id", generateMessageId())
+                .attr("xmlns", "md")
+                .attr("type", "set")
+                .attr("to", Jid.SERVER_JID)
+                .content(List.of(companionRegNode))
+                .build();
+
+        sendNode(iqNode);
+        LOG.info("Sent link_code_companion_reg IQ to WhatsApp server for target {}", cleanPhone);
     }
 
     public void sendMessage(Jid target, String text) {

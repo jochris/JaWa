@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 package id.jawa.socket;
 
 import org.slf4j.Logger;
@@ -28,7 +28,7 @@ public final class FrameSocket implements AutoCloseable {
     public static final String URL = "wss://web.whatsapp.com/ws/chat";
     public static final String ORIGIN = "https://web.whatsapp.com";
     public static final byte[] WA_CONN_HEADER = new byte[]{'W', 'A', 6, 3};
-    public static final int FRAME_MAX_SIZE = 4 * 1024 * 1024; // 4MB
+    public static final int FRAME_MAX_SIZE = 4 * 1024 * 1024;
 
     private final BlockingQueue<byte[]> frames = new LinkedBlockingQueue<>();
     private final AtomicBoolean closed = new AtomicBoolean(false);

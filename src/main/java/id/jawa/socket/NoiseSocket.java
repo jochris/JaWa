@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 package id.jawa.socket;
 
 import id.jawa.util.Crypto;
@@ -14,7 +14,7 @@ import java.util.function.Consumer;
 
 /**
  * Encrypted frame socket using AES-GCM write and read keys, matching whatsmeow/socket/noisesocket.go.
- * Leverages Java 21 Virtual Threads for non-blocking frame consumer pump.
+ * Leverages Java Virtual Threads for non-blocking frame consumer pump.
  */
 public final class NoiseSocket implements AutoCloseable {
     private static final Logger LOG = LoggerFactory.getLogger(NoiseSocket.class);
@@ -27,7 +27,7 @@ public final class NoiseSocket implements AutoCloseable {
     private final AtomicInteger readCounter = new AtomicInteger(0);
     private final AtomicBoolean destroyed = new AtomicBoolean(false);
 
-    // Java 21 Virtual Thread Executor for processing incoming frame pump
+    /** Java Virtual Thread Executor for processing incoming frame pump */
     private final ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
 
     public NoiseSocket(FrameSocket fs, byte[] writeKey, byte[] readKey, Consumer<byte[]> frameHandler) {

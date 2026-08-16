@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 package id.jawa.binary;
 
 import id.jawa.types.Jid;
@@ -16,7 +16,7 @@ public final class BinaryEncoder {
 
     public byte[] encode(BinaryNode node) {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
-        out.write(0); // Leading zero byte
+        out.write(0);
         writeNode(out, node);
         return out.toByteArray();
     }
