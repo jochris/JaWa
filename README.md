@@ -19,6 +19,7 @@ This project is not affiliated with, authorized, or endorsed by WhatsApp. Use a 
 - **Native Protocol**: Direct WebSocket + Noise XX handshake without browser automation.
 - **Whatsmeow Architecture**: Clean module structure ported directly from whatsmeow.
 - **Minimal Dependencies**: Native HTTP/WebSocket transport and standard cryptography.
+- **Phone Pairing Code**: Generate 8-character Crockford pairing codes (`XXXX-XXXX`) for phone linking without QR scanning.
 
 ---
 
@@ -27,11 +28,11 @@ This project is not affiliated with, authorized, or endorsed by WhatsApp. Use a 
 ```
 id.jawa
 ├── types     — JID (Jabber ID) and domain records
-├── util      — Byte, hex, base64, and crypto utilities
+├── util      — Byte, hex, base64, Crockford, and crypto utilities
 ├── binary    — WhatsApp binary XML nodes, tokens, encoder & decoder
 ├── socket    — FrameSocket, NoiseHandshake, and NoiseSocket transport
 ├── store     — Device state, keys, and session storage
-└── client    — Main client facade and event handling
+└── client    — Main client facade, pairing code, and event handling
 ```
 
 ---
@@ -48,7 +49,7 @@ id.jawa
 </dependency>
 ```
 
-### Quick Example
+### Quick Start Example
 
 ```java
 import id.jawa.client.JaWaClient;
@@ -59,6 +60,21 @@ public class SimpleBot {
             client.addEventHandler(event -> System.out.println("Received event: " + event));
             client.connect();
         }
+    }
+}
+```
+
+### Phone Code Pairing Example
+
+```java
+import id.jawa.client.PairingCode;
+
+public class PhonePairingExample {
+    public static void main(String[] args) {
+        // Generate Crockford pairing code for phone-number linking
+        var pairResult = PairingCode.generateCompanionEphemeralKey();
+        
+        System.out.println("Pairing Code: " + pairResult.formattedCode()); // e.g. ABCD-1234
     }
 }
 ```
