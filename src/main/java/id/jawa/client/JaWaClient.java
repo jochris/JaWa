@@ -1,17 +1,21 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 package id.jawa.client;
 
+import com.google.protobuf.ByteString;
 import id.jawa.binary.BinaryDecoder;
 import id.jawa.binary.BinaryEncoder;
 import id.jawa.binary.BinaryNode;
 import id.jawa.events.ConnectedEvent;
 import id.jawa.events.MessageEvent;
 import id.jawa.events.PairingCodeEvent;
+import id.jawa.proto.Wa;
 import id.jawa.socket.FrameSocket;
+import id.jawa.socket.NoiseHandshake;
 import id.jawa.socket.NoiseSocket;
 import id.jawa.store.DeviceStore;
 import id.jawa.types.Jid;
 import id.jawa.util.Bytes;
+import id.jawa.util.Crypto;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -19,6 +23,7 @@ import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
@@ -57,10 +62,66 @@ public final class JaWaClient implements AutoCloseable {
 
         this.frameSocket = new FrameSocket();
         this.frameSocket.connect();
-        this.connected.set(true);
 
+        doHandshake();
+
+        this.connected.set(true);
         dispatchEvent(new ConnectedEvent());
-        LOG.info("JaWa client connected to WhatsApp Web socket");
+        LOG.info("JaWa client connected and Noise XX Handshake completed!");
+    }
+
+    private void doHandshake() throws Exception {
+        NoiseHandshake nh = new NoiseHandshake();
+        nh.start("Noise_XX_25519_AESGCM_SHA256\0\0\0\0", FrameSocket.WA_CONN_HEADER);
+
+        Crypto.KeyPair ephemeralKP = Crypto.generateCurve25519KeyPair();
+        nh.authenticate(ephemeralKP.pubKey());
+
+        Wa.HandshakeMessage handshakeMsg = Wa.HandshakeMessage.newBuilder()
+                .setClientHello(Wa.HandshakeMessage.ClientHello.newBuilder()
+                        .setEphemeral(ByteString.copyFrom(ephemeralKP.pubKey()))
+                        .build())
+                .build();
+
+        frameSocket.sendFrame(handshakeMsg.toByteArray());
+
+        byte[] resp = frameSocket.receiveFrame(20, TimeUnit.SECONDS);
+        if (resp == null) {
+            throw new IllegalStateException("Handshake timeout waiting for ServerHello");
+        }
+
+        Wa.HandshakeMessage handshakeResponse = Wa.HandshakeMessage.parseFrom(resp);
+        Wa.HandshakeMessage.ServerHello serverHello = handshakeResponse.getServerHello();
+
+        byte[] serverEphemeral = serverHello.getEphemeral().toByteArray();
+        byte[] serverStaticCiphertext = serverHello.getStatic().toByteArray();
+        byte[] certificateCiphertext = serverHello.getPayload().toByteArray();
+
+        nh.authenticate(serverEphemeral);
+        nh.mixSharedSecretIntoKey(ephemeralKP.privKey(), serverEphemeral);
+
+        byte[] staticDecrypted = nh.decrypt(serverStaticCiphertext);
+        nh.mixSharedSecretIntoKey(ephemeralKP.privKey(), staticDecrypted);
+
+        byte[] certDecrypted = nh.decrypt(certificateCiphertext);
+
+        byte[] encryptedPubkey = nh.encrypt(store.noiseKey().pubKey());
+        nh.mixSharedSecretIntoKey(store.noiseKey().privKey(), serverEphemeral);
+
+        NoiseHandshake.Keys keys = nh.finish();
+
+        this.noiseSocket = new NoiseSocket(frameSocket, keys.write(), keys.read(), this::handleIncomingEncryptedFrame);
+    }
+
+    private void handleIncomingEncryptedFrame(byte[] plaintext) {
+        try {
+            BinaryNode node = decoder.decode(plaintext);
+            if (node != null) {
+                handleIncomingNode(node);
+            }
+        } catch (Exception e) {
+            LOG.error("Failed to decode incoming binary node", e);
+        }
     }
 
     public String pairPhone(String phoneNumber) {
