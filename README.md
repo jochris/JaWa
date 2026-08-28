@@ -311,6 +311,40 @@ public class CarouselExample {
 
 ---
 
+### 6. SQLite Database Session Storage
+
+Save and restore WhatsApp credentials & session state using an SQLite database (`SqliteAuthStore`):
+
+```java
+package com.example;
+
+import id.jawa.client.JaWaClient;
+import id.jawa.domain.store.SqliteAuthStore;
+
+import java.nio.file.Path;
+
+public class SqliteSessionExample {
+
+    public static void main(String[] args) throws Exception {
+        /* SQLite database session store */
+        SqliteAuthStore store = new SqliteAuthStore(Path.of("sessions/app.db"));
+        JaWaClient client = new JaWaClient(store, Path.of("sessions/app.signal")).autoReconnect(true);
+
+        client.listener(new JaWaClient.Listener() {
+            @Override
+            public void onConnected() {
+                System.out.println("🎉 Connected using SQLite Database session store!");
+            }
+        });
+
+        client.connect();
+        client.join();
+    }
+}
+```
+
+---
+
 ## 📄 License
 
 This project is licensed under the terms of the **GNU General Public License v3.0** (GPL-3.0-or-later). See [LICENSE](LICENSE) for details.
