@@ -1,59 +1,20 @@
-# JaWa — Java WhatsApp Web library
+# JaWa — Java WhatsApp Web Client Library
 
 [![build](https://github.com/jochris/JaWa/actions/workflows/build.yml/badge.svg)](https://github.com/jochris/JaWa/actions/workflows/build.yml)
 [![license](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
-[![java](https://img.shields.io/badge/java-21-orange)](https://openjdk.org/projects/jdk/21/)
+[![java](https://img.shields.io/badge/java-compatible-orange)](https://openjdk.org/)
 [![Maven Central](https://img.shields.io/maven-central/v/io.github.jochris/JaWa)](https://central.sonatype.com/artifact/io.github.jochris/JaWa)
 
-> Unofficial **Java 21** library for the WhatsApp Web multi-device protocol,
-> ported from [Baileys](https://github.com/WhiskeySockets/Baileys) (TypeScript) and
-> [whatsmeow](https://github.com/tulir/whatsmeow) (Go).
+> Pure **Java** library for the WhatsApp Web Multi-Device protocol.
+> Features end-to-end Signal encryption, full binary node encoding/decoding, phone & QR pairing, interactive CTA buttons, carousels, lists, and group management.
 
-> [!CAUTION]
-> **Status: pre-alpha.** Multi-month build in progress — protocol surface incomplete
-> (no media, no app-state sync, no persistent Signal store yet). **Do not use against
-> your primary WhatsApp account.** WhatsApp explicitly forbids unofficial clients;
-> using this library carries account-suspension risk.
+---
 
-# Disclaimer
+## 📦 Installation
 
-This project is not affiliated, associated, authorized, endorsed by, or in any way
-officially connected with WhatsApp or any of its subsidiaries or its affiliates.
-"WhatsApp" and related marks are registered trademarks of their respective owners.
+Add `JaWa` to your project build configuration:
 
-The maintainers do not condone use of this project in ways that violate WhatsApp's
-Terms of Service. Use a dedicated test number, never your primary account. No bulk
-messaging, no stalkerware, no spam.
-
-##
-
-- JaWa talks to WhatsApp Web directly over **WebSocket + Noise XX + libsignal**.
-  No Selenium, no Chromium — saves you ~500 MB of RAM.
-- Java 21+ only. Built on records, sealed classes, virtual threads, pattern matching.
-- Source-of-truth references (Baileys + whatsmeow) live in-tree under `references/`
-  for protocol disambiguation.
-
-# Stack
-
-- **JDK 21** (records, sealed classes, virtual threads, pattern matching)
-- **Maven**
-- **BouncyCastle** — Curve25519 ECDH, AES-GCM, HKDF-SHA256, HMAC
-- **signal-protocol-java** — XEdDSA sign/verify, X3DH, Double Ratchet, Sender Keys
-- **protobuf-java** (pinned to `3.10.0` — see Gotchas)
-- **nv-websocket-client** — WebSocket transport
-- **ZXing** — terminal-rendered pairing QR
-
-id.jawa.proto     — Generated protobuf classes
-id.jawa.event     — Event listener API (folded into core.JaWaClient.Listener)
-id.jawa.core      — Client facade + public API
-id.jawa.util      — JID, base64url, hex, crypto helpers
-```
-
-# Install
-
-JaWa is published on Maven Central.
-
-**Maven:**
+### Maven
 
 ```xml
 <dependency>
@@ -63,289 +24,141 @@ JaWa is published on Maven Central.
 </dependency>
 ```
 
-> [!NOTE]
-> `logback-classic` is `runtime` scope in JaWa's build. Supply your own SLF4J binding
-> (logback, log4j-slf4j, etc.) in the consumer project.
+### Gradle
 
-# Try the demo
-
-```sh
-# QR pairing
-mvn exec:java -Djawa.session=sessions/myphone.session
-
-# Phone-number pairing code (preferred when testing)
-mvn exec:java -Djawa.session=sessions/myphone.session -Djawa.phone=628xxxxxxxxx
+```groovy
+implementation 'io.github.jochris:JaWa:0.0.3'
 ```
 
-Maven automatically forwards all `-Djawa.*` system properties set on the Maven CLI through to
-the application JVM. Useful demo knobs: `jawa.session`, `jawa.phone`, `jawa.target`,
-`jawa.text`, `jawa.target_group`, `jawa.list_groups`.
+---
 
-# Index
+## 🏗️ Architecture Layout
 
-- [Connecting Account](#connecting-account)
-    - [Connect with QR-CODE](#connect-with-qr-code)
-    - [Connect with Pairing Code](#connect-with-pairing-code)
-    - [Saving & Restoring Sessions](#saving--restoring-sessions)
-- [Handling Events](#handling-events)
-    - [The Listener Interface](#the-listener-interface)
-    - [Minimal Echo Bot Example](#minimal-echo-bot-example)
-- [Sending Messages](#sending-messages)
-    - [Text Message (DM)](#text-message-dm)
-    - [Text Message (Group)](#text-message-group)
-    - [Send Arbitrary `Wa.Message`](#send-arbitrary-wamessage)
-- [Modify Messages](#modify-messages)
-    - [Reaction](#reaction)
-    - [Poll](#poll)
-    - [Send Location](#send-location)
-    - [Send Contact](#send-contact)
-    - [Mentions](#mentions)
-    - [Reply / Quote](#reply--quote)
-    - [Edit Message](#edit-message)
-    - [CTA Buttons (URL / Copy / Call / Quick-Reply)](#cta-buttons-url--copy--call--quick-reply)
-    - [Quick-Reply Buttons](#quick-reply-buttons)
-    - [Carousel](#carousel)
-    - [List Message](#list-message)
-    - [Revoke (Delete for Everyone)](#revoke-delete-for-everyone)
-- [Media](#media)
-    - [Send Image](#send-image)
-    - [Send Video](#send-video)
-    - [Send Audio / Voice Note](#send-audio--voice-note)
-    - [Send Document](#send-document)
-    - [Send View-Once Media](#send-view-once-media)
-    - [Download Received Media](#download-received-media)
-    - [Low-level Media APIs](#low-level-media-apis)
-- [Receipts](#receipts)
-    - [Send Read / Played Receipt](#send-read--played-receipt)
-    - [Observe Receipts from Peers](#observe-receipts-from-peers)
-- [Receiving Messages](#receiving-messages)
-- [WhatsApp IDs / JIDs Explained](#whatsapp-ids--jids-explained)
-- [User & Device Queries](#user--device-queries)
-    - [Query Devices for a User](#query-devices-for-a-user)
-    - [Bootstrap Signal Sessions](#bootstrap-signal-sessions)
-- [Groups](#groups)
-    - [List Joined Groups](#list-joined-groups)
-    - [Create Group](#create-group)
-    - [Leave Group](#leave-group)
-    - [Add / Remove / Promote / Demote Participants](#add--remove--promote--demote-participants)
-    - [Change Subject](#change-subject)
-    - [Set / Clear Description (Topic)](#set--clear-description-topic)
-- [Low-level APIs](#low-level-apis)
-    - [Send Raw Stanza](#send-raw-stanza)
-    - [Send IQ with Response](#send-iq-with-response)
-- [Status — what works today](#status--what-works-today)
-- [Gotchas](#gotchas)
-- [Contributing](#contributing)
-- [License](#license)
+`JaWa` is structured into clean, domain-driven packages:
 
-## Connecting Account
+```text
+id.jawa
+├── client/                     <-- Primary Client Facade & Event Listeners
+├── protocol/                   <-- Wire Protocol, Codecs & Cryptography
+│   ├── connection/             <-- WebSocket, Noise XX Handshake & Transport
+│   ├── codec/                  <-- Binary XML Node Encoder / Decoder
+│   └── crypto/                 <-- Cryptography & Byte Utilities
+├── domain/                     <-- Core Domain Models & Store Interfaces
+│   ├── model/                  <-- JID, Auth Credentials, Receipt & Protocol Models
+│   └── store/                  <-- File & In-Memory Persistence Stores
+└── feature/                    <-- Feature Subsystems
+    ├── pairing/                <-- QR & Phone-Code Pairing Handshake
+    ├── messaging/              <-- E2EE Messaging, Group Actions & USync Query
+    ├── media/                  <-- Media Encrypt/Decrypt & Upload/Download
+    ├── appstate/               <-- Multi-Device AppState Sync & LtHash
+    └── signal/                 <-- E2EE Session Bootstrap & PreKey Management
+```
 
-WhatsApp's multi-device API lets JaWa authenticate as a linked device alongside your
-phone. Two flows are supported.
+---
 
-> [!IMPORTANT]
-> Sessions are persisted to a single file via `FileAuthStore`. The file holds the
-> Noise static key, Signal identity key, and (post-pair) the signed device identity.
-> **Treat it as a secret.** The path `sessions/*.session` is gitignored by default;
-> never check one in.
+## 🚀 Code Examples
 
-### Connect with QR-CODE
+### 1. Extract & Resolve Phone Number (PN)
+
+Extract clean phone number digits from incoming sender JID, with automatic LID-to-PN resolution via `JaWaClient.LID_TO_PN_MAP`:
 
 ```java
-import id.jawa.core.JaWaClient;
-import id.jawa.store.FileAuthStore;
-import id.jawa.util.QrTerminal;
+package com.example;
+
+import id.jawa.client.JaWaClient;
+import id.jawa.domain.store.FileAuthStore;
+import id.jawa.feature.messaging.MessageReceiver;
+
+import java.nio.file.Path;
+
+public class PhoneNumberResolverExample {
+
+    public static void main(String[] args) throws Exception {
+        FileAuthStore store = new FileAuthStore(Path.of("sessions/bot.session"));
+        JaWaClient client = new JaWaClient(store, Path.of("sessions/bot.signal")).autoReconnect(true);
+
+        client.listener(new JaWaClient.Listener() {
+            @Override
+            public void onConnected() {
+                System.out.println("Bot connected!");
+            }
+
+            @Override
+            public void onMessage(MessageReceiver.Decoded d) {
+                /* Get the sender JID (can be PN or LID format) */
+                String senderJid = d.senderJid();
+
+                /* Extract clean Phone Number digits */
+                String phoneNumber = extractPhoneNumber(senderJid);
+
+                System.out.println("Pesan dari nomor HP: +" + phoneNumber);
+                System.out.println("Raw Sender JID     : " + senderJid);
+            }
+        });
+
+        client.connect();
+        client.join();
+    }
+
+    public static String extractPhoneNumber(String senderJid) {
+        if (senderJid == null) return "";
+
+        String userPart = senderJid.split("@")[0].split(":")[0];
+
+        /* Check if senderJid is LID format and mapped to PN in LID_TO_PN_MAP */
+        String mappedPn = JaWaClient.LID_TO_PN_MAP.get(userPart + "@lid");
+        if (mappedPn != null) {
+            return mappedPn.split("@")[0].split(":")[0].replaceAll("[^0-9]", "");
+        }
+
+        /* Return clean phone number digits */
+        return userPart.replaceAll("[^0-9]", "");
+    }
+}
+```
+
+---
+
+### 2. Phone Pairing Code Connection
+
+Connect and pair using an 8-character pairing code sent directly to your phone number:
+
+```java
+package com.example;
+
+import id.jawa.client.JaWaClient;
+import id.jawa.domain.store.FileAuthStore;
 
 import java.nio.file.Path;
 import java.util.List;
 
-public class Main {
+public class PhonePairingExample {
+
     public static void main(String[] args) throws Exception {
-        FileAuthStore store = new FileAuthStore(Path.of("sessions/mydev.session"));
-        JaWaClient client = new JaWaClient(store);
+        FileAuthStore store = new FileAuthStore(Path.of("sessions/phone.session"));
+        JaWaClient client = new JaWaClient(store, Path.of("sessions/phone.signal")).autoReconnect(true);
 
         client.listener(new JaWaClient.Listener() {
-            @Override public void onQr(List<String> qrs) {
-                // Each entry is "ref,noisePub,identityPub,advSecret" — render as QR.
-                // JaWa ships QrTerminal for ANSI half-block rendering.
-                System.out.print(QrTerminal.render(qrs.get(0)));
-            }
-            @Override public void onPaired(String jid, String pushName, String platform) {
-                System.out.println("Paired as " + jid);
-            }
-            @Override public void onConnected() {
-                System.out.println("Steady state");
-            }
-        });
-
-        client.connect();
-        client.join();
-    }
-}
-```
-
-Refs rotate every ~30 s. If the first ref expires before the user scans, the next
-`onQr` callback delivers fresh refs automatically.
-
-### Connect with Pairing Code
-
-Phone-number pairing skips the QR entirely. The user enters an 8-char code in
-**WhatsApp → Settings → Linked Devices → Link with phone number**.
-
-> [!IMPORTANT]
-> Phone number must be in E.164 form **without** `+`, spaces, or dashes.
-> E.g. `628123456789`, not `+62 812-345-6789`.
-
-```java
-client.listener(new JaWaClient.Listener() {
-    @Override public void onQr(List<String> qrs) {
-        // Server pushed QR refs, but we want pair-code instead — pivot now.
-        client.requestPairingCode("628123456789", null).whenComplete((code, err) -> {
-            if (err != null) { err.printStackTrace(); return; }
-            // Format as XXXX-XXXX for display (the dash is cosmetic).
-            String pretty = code.substring(0, 4) + "-" + code.substring(4);
-            System.out.println("Enter on phone: " + pretty);
-        });
-    }
-    @Override public void onPaired(String jid, String pushName, String platform) {
-        System.out.println("Paired as " + jid);
-    }
-});
-
-client.connect();
-client.join();
-```
-
-The second argument to `requestPairingCode` is an optional fixed code (8 Crockford
-chars); pass `null` for a server-generated random one.
-
-### Saving & Restoring Sessions
-
-You don't want to re-pair every run. `FileAuthStore` persists creds to a file. On
-subsequent `connect()`, JaWa loads them and skips QR/pair-code entirely.
-
-```java
-Path session = Path.of("sessions/mydev.session");
-Path signal  = Path.of("sessions/mydev.signal"); // optional, see below
-
-FileAuthStore store = new FileAuthStore(session);
-JaWaClient client = new JaWaClient(store, signal);
-client.connect();   // first run: fresh keys + QR/pair-code
-client.connect();   // second run: loaded creds → straight to login
-```
-
-The second constructor argument is an optional directory for **persistent Signal
-state**. When set, libsignal sessions and one-time pre-keys survive process
-restart, so the first message from a previously-paired peer no longer triggers
-`NoSessionException` → retry-receipt round trip. Pass `null` (or use the
-single-arg overload) to keep Signal state in memory.
-
-```
-sessions/
-├── mydev.session                                # AuthCreds: Noise + identity keys
-└── mydev.signal/
-    ├── sessions/<base64name>__<dev>.session     # one libsignal SessionRecord per peer device
-    ├── prekeys/<id>.prekey                      # one 64-byte priv||pub per one-time pre-key
-    └── sender-keys/<b64group>__<b64sender>__<dev>.senderkey  # one SenderKeyRecord per (group, sender)
-```
-
-Implement your own `AuthStore` for SQLite / encrypted keystore / cloud-backed
-storage:
-
-```java
-public interface AuthStore {
-    AuthCreds load() throws Exception;
-    void save(AuthCreds creds) throws Exception;
-}
-```
-
-
-## Handling Events
-
-JaWa uses a callback `Listener` (not an event bus). One listener per client; multiple
-listeners aren't supported.
-
-### The Listener Interface
-
-```java
-public interface Listener {
-    /** Server sent QR refs. Each entry is "ref,noisePub,identityPub,advSecret". */
-    default void onQr(List<String> qrStrings) {}
-
-    /** Pairing completed; creds were persisted via AuthStore. */
-    default void onPaired(String jid, String pushName, String platform) {}
-
-    /** Steady-state connection up — handshake done, login complete. */
-    default void onConnected() {}
-
-    /** A <message> stanza was successfully decrypted. */
-    default void onMessage(MessageReceiver.Decoded decoded) {}
-
-    /** Inbound <receipt> already parsed (delivery / read / played / retry / sender). */
-    default void onReceipt(Receipt receipt) {}
-
-    /** Inbound stanza after handshake/pairing (everything not handled internally). */
-    default void onStanza(BinaryNode node) {}
-
-    /**
-     * Server tore the session down. {@code permanent=true} means re-pair is required
-     * (REVOKED / BANNED / VERSION_OBSOLETE / REPLACED); auto-reconnect is suppressed.
-     * {@code permanent=false} means transient — auto-reconnect (if enabled) will retry.
-     */
-    default void onTerminated(TerminationReason reason, String detail, boolean permanent) {}
-
-    /** Fatal client error. */
-    default void onError(Throwable t) {}
-}
-```
-
-`TerminationReason` values:
-
-| Value | Trigger | Action |
-|---|---|---|
-| `REVOKED` | `<failure reason="401">` (user unlinked device) | re-pair |
-| `BANNED` | `<failure reason="403">` / `co_block` | account-level — appeal to WA |
-| `VERSION_OBSOLETE` | `<failure reason="405">` | bump `WaConstants.WA_VERSION` |
-| `REPLACED` | `<stream:error><conflict type="replaced"/>` | another session took over; restart only one |
-| `TRANSIENT` | 5xx or generic stream:error | auto-reconnect retries automatically |
-| `UNKNOWN` | unrecognized reason | treated as permanent (safe default) |
-
-> [!CAUTION]
-> **All listener callbacks fire on JaWa's reader thread.** Long work in any callback
-> stalls all inbound stanzas. Offload to a virtual thread:
->
-> ```java
-> @Override public void onMessage(MessageReceiver.Decoded d) {
->     Thread.startVirtualThread(() -> handleHeavyWork(d));
-> }
-> ```
-> `sendIq` / `sendText` themselves are safe from any thread — they enqueue.
-
-### Minimal Echo Bot Example
-
-```java
-import id.jawa.core.JaWaClient;
-import id.jawa.message.MessageReceiver.Decoded;
-import id.jawa.store.FileAuthStore;
-
-import java.nio.file.Path;
-
-public class EchoBot {
-    public static void main(String[] args) throws Exception {
-        FileAuthStore store = new FileAuthStore(Path.of("sessions/echo.session"));
-        JaWaClient client = new JaWaClient(store);
-
-        client.listener(new JaWaClient.Listener() {
-            @Override public void onConnected() {
-                System.out.println("Echo bot online");
-            }
-            @Override public void onMessage(Decoded d) {
-                if (d.text() == null) return;                  // skip non-text
-                Thread.startVirtualThread(() -> {
-                    String reply = "echo: " + d.text();
-                    client.sendText(d, reply);                 // Automatically routes and replies back to sender/group
+            @Override
+            public void onQr(List<String> qrs) {
+                /* Request an 8-character phone pairing code */
+                String targetPhone = "6285607589072";
+                client.requestPairingCode(targetPhone, null).whenComplete((code, err) -> {
+                    if (err != null) {
+                        System.err.println("Failed to get pairing code: " + err.getMessage());
+                        return;
+                    }
+                    System.out.println("==================================================");
+                    System.out.println("📱 Target Phone Number: +" + targetPhone);
+                    System.out.println("🔑 Pairing Code      : " + code.substring(0, 4) + "-" + code.substring(4));
+                    System.out.println("==================================================");
                 });
             }
+
+            @Override
+            public void onConnected() {
+                System.out.println("🎉 Connected and paired successfully via Phone Code!");
+            }
         });
 
         client.connect();
@@ -354,941 +167,150 @@ public class EchoBot {
 }
 ```
 
-A more polished base lives in [`jawa-bot`](../jawa-bot) (sibling repo) with command
-dispatch, config file, and ping/menu/exec commands.
+---
 
-## Sending Messages
+### 3. Terminal QR Code Pairing
 
-All send APIs return a `CompletableFuture<String>` resolving to the outbound message
-id (uppercase hex).
-
-### Text Message
-
-The same `sendText` method automatically routes to either a 1-on-1 DM or a group chat depending on the JID suffix:
+Connect and pair by scanning an ASCII QR matrix in the terminal:
 
 ```java
-// Send a DM (toUser must be a bare JID, no device suffix)
-String dmId = client.sendText("628xxxxxxxxx@s.whatsapp.net", "hello from JaWa").join();
-
-// Send to a Group
-String groupId = client.sendText("120363xxxxxxxxxxxx@g.us", "halo grup").join();
-```
-
-What happens under the hood:
-* **For DMs**: Resolves target devices (USync), fetches pre-key bundles (X3DH), installs Signal sessions, and encrypts per-device (with DSM wrap for own companion devices).
-* **For Groups**: Uses the Sender Keys protocol (encrypts the text once with `GroupCipher` and distributes the `SenderKeyDistributionMessage` per-participant-device using `SessionCipher`).
-
-### Send Arbitrary `Wa.Message`
-
-If you need to send custom protobuf objects (e.g. stickers, contact cards, or raw fields that JaWa doesn't expose via named helpers), use the unified `sendMessage` method:
-
-```java
-import id.jawa.proto.Wa;
-
-Wa.Message custom = Wa.Message.newBuilder()
-    .setExtendedTextMessage(Wa.Message.ExtendedTextMessage.newBuilder()
-        .setText("**bold** isn't a thing, but extendedText carries metadata"))
-    .build();
-
-// Automatically routes to group, DM, or newsletter based on the JID suffix
-client.sendMessage("628xxx@s.whatsapp.net", custom).join();
-client.sendMessage("120363...@g.us", custom).join();
-client.sendMessage("120363...@newsletter", custom).join();
-```
-
-
-## Modify Messages
-
-All helpers route DM, group, and newsletter automatically based on the chat JID suffix
-(`@g.us` → group, `@newsletter` → newsletter, otherwise DM) and return the new outbound message's id.
-
-### Reaction
-
-Attach an emoji to an existing message.
-
-```java
-// Automatic (preferred when responding to an event / received message):
-client.sendReaction(decodedMsg, "🔥").join();
-
-// Manual (by specifying target IDs directly):
-String reactionId = client.sendReaction(
-    "120363...@g.us",                       // chat where the target lives
-    "ACD57CB93B82719FD44D1F231C89F352",     // target message id
-    "224983875903488@lid",                  // target sender device JID (group only; null for DMs)
-    /* fromMe = */ false,                   // true if the target was your own message
-    "🔥"                                     // emoji (empty string removes)
-).join();
-```
-
-### Poll
-
-Native poll bubble with single-select or multi-select voting. Voters' choices
-are end-to-end encrypted with a per-poll random 32-byte key (`messageSecret`
-on `messageContextInfo`) — even the server can't read individual votes.
-
-```java
-client.sendPoll(
-    "120363...@g.us",
-    "Test poll dari JaWa 🚀",                       // question
-    List.of("Yes ✅", "No ❌", "Maybe 🤔"),          // 1-12 options
-    /* selectableCount = */ 1                       // 1 = single-select, >1 = multi, 0 = unlimited
-).join();
-```
-
-> [!NOTE]
-> {@code selectableCount=1} produces a single-select poll
-> ({@code pollCreationMessageV3}); higher values produce multi-select
-> ({@code pollCreationMessage} V1). Receiver app renders proper radio /
-> checkbox UI accordingly.
-
-Decode incoming votes — a voter's `pollUpdateMessage` is end-to-end encrypted with
-a key derived from the original poll's `messageSecret`, so the bot has to remember
-the secret it sent the poll with:
-
-```java
-import id.jawa.message.PollDecoder;
-
-byte[] originalSecret = /* the messageSecret returned when building the poll */;
-List<String> originalOptions = List.of("Baileys", "whatsmeow", "JaWaaaa");
-
-@Override public void onMessage(Decoded d) {
-    var pm = d.message();
-    if (!pm.hasPollUpdateMessage()) return;
-    var vote = pm.getPollUpdateMessage().getVote();
-
-    List<String> picks = PollDecoder.decryptVote(
-        vote.getEncPayload().toByteArray(),
-        vote.getEncIv().toByteArray(),
-        originalSecret,
-        d.msgId(),                                          // poll's id (matches vote.pollCreationMessageKey.id)
-        myBareJid,                                          // bare JID of the poll author (us)
-        stripDevice(d.senderJid()),                         // bare JID of the voter
-        originalOptions
-    );
-    System.out.println(d.senderJid() + " voted: " + picks);
-}
-```
-
-### Send Location
-
-Static map pin at the given coordinates. Optional `name` / `address` render as a
-caption below the pin.
-
-```java
-client.sendLocation(
-    "628xxx@s.whatsapp.net",
-    -6.1753924,                          // latitude
-    106.8271528,                         // longitude
-    "Monas Jakarta",                     // name — nullable
-    "Gambir, Central Jakarta"            // address — nullable
-).join();
-```
-
-### Send Contact
-
-Share a vCard. Caller supplies the vCard string — minimal shape:
-
-```java
-String vcard = """
-    BEGIN:VCARD
-    VERSION:3.0
-    FN:Jane Doe
-    TEL;type=CELL;type=VOICE;waid=628xxx:+62 8xxx
-    END:VCARD
-    """;
-
-client.sendContact("628yyy@s.whatsapp.net", "Jane Doe", vcard).join();
-```
-
-The `waid=` segment in the `TEL` line is what WhatsApp uses to render the
-"Message" button on the contact card — must match the number's WA registration.
-
-### Mentions
-
-Tag one or more users in a text. The receiver app renders each `@<number>` as
-a tappable handle that opens the mentioned user's profile and, in groups, pings
-that user.
-
-```java
-client.sendTextWithMentions(
-    "120363...@g.us",                              // chat (DM bare JID or group @g.us)
-    "halo @628aaa @628bbb dah pada bangun? 👋",   // body — must contain @<number> for each mention
-    List.of(
-        "628aaa@s.whatsapp.net",                   // full bare JIDs, in matching order
-        "628bbb@s.whatsapp.net"
-    )
-).join();
-```
-
-> [!IMPORTANT]
-> The `@<number>` in the body and the `mentionedBareJids` list are independent
-> wires — WhatsApp uses the list to know who to notify, the body to know where
-> to highlight. Forget either and the mention silently degrades to plain text.
-
-### Reply / Quote
-
-Send a text reply that quotes an existing message. The recipient's UI renders a
-block-quote preview.
-
-```java
-// Automatic (preferred when replying to an event / received message):
-client.sendReply(decodedMsg, "ok di-reply 🔥").join();
-
-// Manual (by specifying target IDs directly):
-String replyId = client.sendReply(
-    "120363...@g.us",
-    "ok di-reply 🔥",                       // new reply text
-    "ACD57CB93B82719FD44D1F231C89F352",     // quoted message id
-    "224983875903488@lid",                  // quoted sender (group); null for DM
-    "test reaction"                         // preview of the quoted text
-).join();
-```
-
-### Edit Message
-
-Replace the text of a message you previously sent. Subject to WhatsApp's ~15-minute edit window.
-
-```java
-// Automatic (preferred when editing a received/decoded message context):
-client.sendEdit(decodedMsg, "hello from jawa (edited)").join();
-
-// Manual (by specifying target IDs directly):
-String editId = client.sendEdit(
-    "120363...@g.us",
-    "E1DC8330D43C02D9",                     // the original message's id
-    "hello from jawa (edited)"
-).join();
-```
-
-### CTA Buttons (URL / Copy / Call / Quick-Reply)
-
-Modern call-to-action buttons via `interactiveMessage.nativeFlowMessage`. Up to
-three buttons render below the body; mix and match types freely. Receiver app
-needs the `<biz>` companion stanza (JaWa adds it automatically).
-
-```java
-import id.jawa.message.MessageEncoder.CtaButton;
-import id.jawa.message.MessageEncoder.ListSection;
-import id.jawa.message.MessageEncoder.ListRow;
-
-client.sendCtaButtons(
-    "628xxx@s.whatsapp.net",
-    "Pick an action:",                                  // body
-    "JaWa v0.0.3",                                      // footer — nullable
-    List.of(
-        CtaButton.url("🌐 Open repo", "https://github.com/jochris/JaWa"),
-        CtaButton.copy("📋 Copy code", "JAWA-2026"),
-        CtaButton.call("📞 Call WA", "+62895416602000"),
-        CtaButton.quickReply("✨ Hello", "qr_hello"),    // fires inbound text "qr_hello"
-        CtaButton.singleSelect("📋 Pick command", List.of(
-            new ListSection("Commands", List.of(
-                new ListRow("ping", "Ping bot", "Cek bot hidup"),
-                new ListRow("info", "Server info", "Show server status")
-            )),
-            new ListSection("Owner", List.of(
-                new ListRow("exec", "Exec shell", "Owner-only")
-            ))
-        ))
-    )
-).join();
-```
-
-> [!NOTE]
-> `cta_url` opens the URL in the user's browser, `cta_copy` copies a code to
-> clipboard, `cta_call` dials the number, `quick_reply` fires an inbound text
-> whose body is the `id` you set, and `single_select` opens a sheet listing the
-> sections / rows you pass (acts like a mini ListMessage that can be mixed with
-> other CTA buttons in the same bubble). All five are confirmed working on
-> regular (non-business) accounts as of June 2026.
-
-### Quick-Reply Buttons
-
-Up to 3 buttons rendered below a body text. When the receiver taps one, you'll
-get back an inbound `buttonsResponseMessage` carrying the matching `buttonId`.
-
-```java
-import id.jawa.message.MessageEncoder.QuickReplyButton;
-
-client.sendButtonsMessage(
-    "628xxx@s.whatsapp.net",
-    "Pick one:",                       // body
-    "JaWa v0.0.3",                     // footer — nullable
-    List.of(
-        new QuickReplyButton("yes", "Yes ✅"),
-        new QuickReplyButton("no",  "No ❌"),
-        new QuickReplyButton("idk", "Maybe 🤔")
-    )
-).join();
-```
-
-> [!NOTE]
-> JaWa automatically appends the `<biz>` companion stanza WhatsApp's server
-> expects alongside any buttons / list / interactive payload. Without that node
-> the receiver silently drops the interactive surface and the message renders
-> blank — so JaWa does it for you. Implementation lives in `id.jawa.message.BizNode`.
-
-### Carousel
-
-Horizontally-scrollable cards, each with its own image header, caption, footer, and
-button set. JaWa uploads every card's media in parallel, then assembles the proto
-in one shot.
-
-```java
-import id.jawa.core.JaWaClient.CarouselCardInput;
-
-byte[] img1 = Files.readAllBytes(Path.of("card1.jpg"));
-byte[] img2 = Files.readAllBytes(Path.of("card2.jpg"));
-byte[] img3 = Files.readAllBytes(Path.of("card3.jpg"));
-
-client.sendCarousel("628xxx@s.whatsapp.net", null, null, List.of(
-    new CarouselCardInput("Card 1", "Caption 1", img1, "image/jpeg", null, List.of(
-        CtaButton.url("🌐 Visit", "https://github.com/jochris/JaWa")
-    )),
-    new CarouselCardInput("Card 2", "Caption 2", img2, "image/jpeg", null, List.of(
-        CtaButton.copy("📋 Copy", "JAWA-CARD2")
-    )),
-    new CarouselCardInput("Card 3", "Caption 3", img3, "image/jpeg", null, List.of(
-        CtaButton.quickReply("⭐ Star", "qr_star")
-    ))
-)).join();
-```
-
-Each card requires non-empty `mediaBytes` — WhatsApp rejects cards without a media
-header. Use `mimetype` starting with `"video/"` to upload a video card instead.
-
-### List Message
-
-A dropdown of selectable rows grouped into sections. Receiver gets a body bubble
-with a "tap to open" target that opens a sheet listing each section's rows.
-
-```java
-import id.jawa.message.MessageEncoder.ListSection;
-import id.jawa.message.MessageEncoder.ListRow;
-
-client.sendListMessage(
-    "628xxx@s.whatsapp.net",
-    "JaWa Menu",                       // title
-    "Pilih command:",                  // body
-    "JaWa v0.0.3",                     // footer — nullable
-    "📋 Open menu",                    // buttonText (the tap target)
-    List.of(
-        new ListSection("Commands", List.of(
-            new ListRow("ping", "Ping bot",      "Cek bot hidup"),
-            new ListRow("info", "Server info",   "Show server status"),
-            new ListRow("menu", "Show menu",     null)
-        )),
-        new ListSection("Owner", List.of(
-            new ListRow("exec", "Exec shell",    "Owner-only command")
-        ))
-    )
-).join();
-```
-
-When the user picks a row, you'll get back a `listResponseMessage` carrying the
-chosen `rowId` (`"ping"` / `"info"` / `"menu"` / `"exec"` in the example above).
-
-### Revoke (Delete for Everyone)
-
-Replaces the original with WhatsApp's "This message was deleted" placeholder for every participant.
-
-```java
-// Automatic (preferred when revoking a received/decoded message context):
-client.sendRevoke(decodedMsg).join();
-
-// Manual (by specifying target IDs directly):
-// revoke your own message
-client.sendRevoke(
-    "120363...@g.us",
-    "E1DC8330D43C02D9",
-    /* targetParticipant = */ null,
-    /* fromMe = */ true
-).join();
-
-// admin revoking someone else's message in a group you administer
-client.sendRevoke(
-    "120363...@g.us",
-    "ACD57CB93B82719FD44D1F231C89F352",
-    "224983875903488@lid",
-    /* fromMe = */ false
-).join();
-```
-
-## Media
-
-WhatsApp media (images, videos, audio, documents) is end-to-end encrypted with a
-per-message random 32-byte `mediaKey`. JaWa handles the crypto, the
-{@code media_conn} auth refresh, and the HTTPS upload; the {@code mediaKey} rides
-inside the Signal-encrypted `Wa.Message` envelope so only the recipient device can
-derive the AES-CBC + HMAC keys.
-
-### Send Image
-
-```java
-byte[] jpeg = Files.readAllBytes(Path.of("photo.jpg"));
-String msgId = client.sendImage(
-    "120363...@g.us",            // chat (DM bare JID or group @g.us)
-    jpeg,
-    "image/jpeg",
-    "look at this 📸"            // caption — nullable
-).join();
-```
-
-### Send Video
-
-```java
-byte[] mp4 = Files.readAllBytes(Path.of("clip.mp4"));
-client.sendVideo(
-    "120363...@g.us",
-    mp4,
-    "video/mp4",
-    "first JaWa video send",     // caption — nullable
-    /* seconds = */ 0,           // 0 if unknown — proto field stays unset
-    /* width   = */ 0,
-    /* height  = */ 0
-).join();
-```
-
-### Send Audio / Voice Note
-
-```java
-byte[] opus = Files.readAllBytes(Path.of("voice.ogg"));
-client.sendAudio(
-    "120363...@g.us",
-    opus,
-    "audio/ogg; codecs=opus",
-    /* seconds = */ 5,
-    /* ptt     = */ true         // true = voice-note bubble, false = regular audio
-).join();
-```
-
-### Send Document
-
-```java
-byte[] pdf = Files.readAllBytes(Path.of("invoice.pdf"));
-client.sendDocument(
-    "628xxx@s.whatsapp.net",
-    pdf,
-    "application/pdf",
-    "invoice.pdf",               // fileName — what the recipient sees as the label
-    "Invoice June 2026"          // title — optional richer display
-).join();
-```
-
-Under the hood:
-1. Generate a fresh random 32-byte `mediaKey`.
-2. `MediaCrypto.encrypt` — HKDF-expand the key into iv/cipherKey/macKey,
-   AES-CBC encrypt the bytes, append a 10-byte truncated HMAC.
-3. `refreshMediaConn` — `<iq xmlns="w:m" type="set"><media_conn/></iq>` to get
-   the auth token + host list (cached until TTL expires).
-4. `MediaUploader.upload` — HTTPS POST `<ciphertext>||<mac10>` to
-   `https://<host>/mms/image/<token>?auth=...&token=...`.
-5. Build `Wa.Message{imageMessage{url, directPath, mediaKey, fileSha256, fileEncSha256, fileLength, mimetype, caption}}`.
-6. Route through `sendMessage` — Signal-encrypted per recipient device, same pipeline as text.
-
-### Low-level Media APIs
-
-For experimentation or sending media types that don't have a named helper yet
-(video / audio / document — they share the same crypto + upload, only the
-`MediaType` info string and the Wa.Message field differ):
-
-```java
-import id.jawa.media.MediaCrypto;
-import id.jawa.media.MediaUploader;
-
-byte[] mediaKey = id.jawa.util.Bytes.random(32);
-var enc = MediaCrypto.encrypt(rawBytes, mediaKey, MediaCrypto.MediaType.VIDEO);
-
-var mediaConn = client.refreshMediaConn().join();
-var upload = MediaUploader.upload(mediaConn, enc, MediaCrypto.MediaType.VIDEO);
-
-// Build your own Wa.Message.VideoMessage with upload.url() + upload.directPath(),
-// mediaKey, enc.fileSha256(), enc.fileEncSha256(), etc., then:
-client.sendMessage(groupJid, customWaMessage).join();
-```
-
-### Send View-Once Media
-
-Image / video / audio that the recipient can open exactly once before WhatsApp
-purges the media from their chat. Same upload pipeline as the regular `sendImage`
-/ `sendVideo` / `sendAudio`; the inner message is wrapped in
-`viewOnceMessageV2` (image / video) or `viewOnceMessageV2Extension` (audio).
-
-```java
-client.sendImageViewOnce(chatJid, jpeg, "image/jpeg", "look — once 👁️").join();
-client.sendVideoViewOnce(chatJid, mp4,  "video/mp4",  null, 0, 0, 0).join();
-client.sendAudioViewOnce(chatJid, opus, "audio/ogg; codecs=opus", 5, /* ptt = */ true).join();
-```
-
-### Download Received Media
-
-`Wa.Message.imageMessage` (and the video / audio / document siblings) carries a
-`url`, `directPath`, `mediaKey`, and `fileEncSha256`. Pass those to
-`downloadMedia` and JaWa handles HTTPS GET, envelope integrity check, MAC
-verification, and AES-CBC decrypt:
-
-```java
-@Override public void onMessage(MessageReceiver.Decoded d) {
-    if (d.message() == null || !d.message().hasImageMessage()) return;
-    var img = d.message().getImageMessage();
-
-    client.downloadMedia(
-        img.getUrl(),                       // prefer this when set
-        img.getDirectPath(),                // fallback via mediaConn host
-        img.getMediaKey().toByteArray(),
-        img.getFileEncSha256().toByteArray(),
-        MediaCrypto.MediaType.IMAGE
-    ).thenAccept(plaintext ->
-        Files.write(Path.of("downloads/" + d.msgId() + ".jpg"), plaintext)
-    );
-}
-```
-
-`downloadByUrl` is preferred when `url` is set (one round-trip); `downloadByDirectPath`
-fetches a fresh `mediaConn` then tries each host until one returns 200.
-
-## User, Presence & Contact Management
-
-Manage online/offline presence status, typing indicators, contact checks, bio status, and blocklists.
-
-### Check if Phone Number is Registered (isOnWhatsApp)
-
-Query if one or more phone numbers are registered on WhatsApp:
-
-```java
-import id.jawa.message.ContactStatus;
-
-client.isOnWhatsApp(List.of("628xxx", "628yyy"))
-    .thenAccept(map -> {
-        for (ContactStatus status : map.values()) {
-            System.out.println(status.jid() + " is registered: " + status.isOnWhatsApp());
-        }
-    });
-```
-
-### Send Chat Presence (Typing / Recording Indicators)
-
-Send typing or audio recording status indicators to a specific chat (DM or Group):
-
-```java
-import id.jawa.core.ChatPresence;
-
-// Set typing status
-client.sendChatPresence("628xxx@s.whatsapp.net", ChatPresence.COMPOSING);
-
-// Set recording audio status
-client.sendChatPresence("120363...@g.us", ChatPresence.RECORDING);
-
-// Stop / Pause status
-client.sendChatPresence("628xxx@s.whatsapp.net", ChatPresence.PAUSED);
-```
-
-### Send Presence (Online / Offline status)
-
-Update the bot's global online status:
-
-```java
-client.sendPresence(true);  // Online (available)
-client.sendPresence(false); // Offline (unavailable)
-```
-
-### Set About/Status Txt
-
-Update the text status (bio) of the bot account:
-
-```java
-client.setStatusMessage("Active JaWa Bot 🤖").join();
-```
-
-### Profile Picture Info
-
-Fetch the public profile picture URL of a contact:
-
-```java
-client.getProfilePictureInfo("628xxx@s.whatsapp.net")
-    .thenAccept(url -> {
-        if (url != null) {
-            System.out.println("Profile Pic URL: " + url);
-        } else {
-            System.out.println("No profile picture or restricted by privacy settings");
-        }
-    });
-```
-
-### Manage Blocklist
-
-Block, unblock, or query the list of blocked JIDs:
-
-```java
-// Query blocked users
-client.getBlocklist().thenAccept(jids -> {
-    System.out.println("Blocked users: " + jids);
-});
-
-// Block a contact
-client.updateBlocklist("628xxx@s.whatsapp.net", true).join();
-
-// Unblock a contact
-client.updateBlocklist("628xxx@s.whatsapp.net", false).join();
-```
-
-## Receipts
-
-WhatsApp's lifecycle ticks (delivered, read, played) ride on `<receipt>` stanzas.
-JaWa auto-acks every inbound receipt to keep the offline queue clear; consumers
-that care about peer-side state hook into them via `Listener.onReceipt`.
-
-### Send Read / Played Receipt
-
-```java
-// Automatic (preferred when responding to an event / received message):
-client.sendReadReceipt(decodedMsg);
-client.sendPlayedReceipt(decodedMsg);  // for voice notes
-
-// Manual (by specifying target IDs directly):
-// DM: a peer sent us a message we just rendered
-client.sendReadReceipt("628xxx@s.whatsapp.net", msgId, /* senderJid = */ null);
-
-// Group: someone in the group sent a message — senderJid is the participant device JID
-client.sendReadReceipt("120363...@g.us", msgId, "224983875903488@lid");
-
-// Voice note we just played back
-client.sendPlayedReceipt(chatJid, msgId, senderJid);
-
-// Batched — first id in the receipt attr, the rest under <list><item id=.../>...
-client.sendReadReceiptBatch(chatJid, List.of(id1, id2, id3), senderJid);
-```
-
-### Observe Receipts from Peers
-
-```java
-@Override public void onReceipt(Receipt r) {
-    String kind = r.type() == null ? "delivered" : r.type();   // null = delivery (one tick)
-    System.out.println(kind + " for " + r.msgIds() + " in " + r.chatJid()
-        + (r.senderJid() != null ? " by " + r.senderJid() : ""));
-}
-```
-
-Possible `Receipt.type()` values: `null` (delivery), `"read"`, `"played"`,
-`"retry"` (peer couldn't decrypt — JaWa already re-encrypts automatically),
-`"server-error"`, `"sender"` (server confirming our group fan-out).
-
-## Receiving Messages
-
-Implement `Listener.onMessage(MessageReceiver.Decoded)`:
-
-```java
-public record Decoded(
-    String senderJid,                   // sender's device-specific JID (or participant for groups)
-    String groupJid,                    // group JID for group messages, null for DMs
-    String msgId,                       // <message id=> value
-    String encType,                     // "pkmsg" | "msg" | "skmsg"
-    Wa.Message message,                 // decrypted, DSM-unwrapped Wa.Message protobuf
-    String text,                        // .conversation or .extendedTextMessage.text, else null
-    InteractiveResponse interactive     // populated when the user tapped a button/row, else null
-) {}
-
-public record InteractiveResponse(
-    String kind,         // "buttons" | "list" | "native_flow"
-    String selectedId,   // buttonId / rowId / native-flow button name
-    String paramsJson,   // raw paramsJson for native_flow taps (parse for the user's id), else null
-    String displayText   // visible echo of what was tapped
-) {}
-```
-
-Quick dispatch from a bot:
-
-```java
-@Override public void onMessage(Decoded d) {
-    if (d.interactive() != null) {
-        var ir = d.interactive();
-        switch (ir.kind()) {
-            case "buttons" -> route(d.senderJid(), "button:" + ir.selectedId());
-            case "list"    -> route(d.senderJid(), "row:"    + ir.selectedId());
-            case "native_flow" -> {
-                // e.g. quick_reply → paramsJson = {"id":"qr_yes"}
-                route(d.senderJid(), "flow:" + ir.selectedId() + " " + ir.paramsJson());
+package com.example;
+
+import id.jawa.client.JaWaClient;
+import id.jawa.domain.store.FileAuthStore;
+import id.jawa.feature.pairing.QrTerminal;
+
+import java.nio.file.Path;
+import java.util.List;
+
+public class QrPairingExample {
+
+    public static void main(String[] args) throws Exception {
+        FileAuthStore store = new FileAuthStore(Path.of("sessions/qr.session"));
+        JaWaClient client = new JaWaClient(store, Path.of("sessions/qr.signal")).autoReconnect(true);
+
+        client.listener(new JaWaClient.Listener() {
+            @Override
+            public void onQr(List<String> qrs) {
+                if (!qrs.isEmpty()) {
+                    System.out.println("\n>>> Scan this QR code with WhatsApp Linked Devices:\n");
+                    System.out.print(QrTerminal.render(qrs.get(0)));
+                }
             }
-        }
-        return;
-    }
-    if (d.text() != null) {
-        route(d.senderJid(), d.text());
-    }
-}
-```
 
-JaWa handles decrypt + ack + delivery receipt automatically. On decrypt failure,
-a `<receipt type="retry">` is sent (M5.E.2) so the peer re-encrypts with fresh keys.
+            @Override
+            public void onConnected() {
+                System.out.println("🎉 Connected successfully via QR Scan!");
+            }
+        });
 
-```java
-@Override public void onMessage(Decoded d) {
-    if (d.text() != null) {
-        System.out.println("DM/group text from " + d.senderJid() + ": " + d.text());
-    } else {
-        System.out.println("Non-text message from " + d.senderJid()
-            + " (encType=" + d.encType() + ")");
+        client.connect();
+        client.join();
     }
 }
 ```
 
-## WhatsApp IDs / JIDs Explained
+---
 
-JaWa exposes `id.jawa.util.Jid` for parsing.
+### 4. Interactive CTA Buttons & Selection Lists
 
-| JID form                                | Use                                       |
-|-----------------------------------------|-------------------------------------------|
-| `[country][number]@s.whatsapp.net`      | Bare DM user (no device)                  |
-| `[country][number]:[device]@s.whatsapp.net` | Specific device of a user             |
-| `[number]-[ts]@g.us`                    | Legacy group                              |
-| `120363[xx]...@g.us`                    | Modern (Community-era) group              |
-| `[number]@lid` / `[number]:[device]@lid`| Linked-ID (LID, alternate identity space) |
-| `status@broadcast`                      | Status / stories                          |
-
-- `client.sendText(...)` automatically routes to either a DM or a group depending on whether the JID ends with `@g.us`. For DMs, it expects a **bare** JID (no `:device` suffix). Strip it with `Jid.parse(s).bare()`.
-
-
-## User & Device Queries
-
-### Query Devices for a User
-
-USync query — what devices does this user have?
+Send rich interactive call-to-action buttons (URL link, copy promo code, quick reply) and single-selection dropdown lists:
 
 ```java
-String userBare = "628xxxxxxxxx@s.whatsapp.net";
-client.queryDevices(List.of(userBare)).thenAccept(map -> {
-    var devices = map.getOrDefault(userBare, List.of());
-    for (var d : devices) {
-        System.out.println("  device id=" + d.id() + " keyIndex=" + d.keyIndex()
-            + (d.hosted() ? " (hosted)" : ""));
+package com.example;
+
+import id.jawa.client.JaWaClient;
+import id.jawa.feature.messaging.MessageEncoder;
+import id.jawa.feature.messaging.MessageEncoder.CtaButton;
+import id.jawa.feature.messaging.MessageEncoder.ListRow;
+import id.jawa.feature.messaging.MessageEncoder.ListSection;
+
+import java.util.List;
+
+public class ButtonsAndListExample {
+
+    public static void sendCtaButtons(JaWaClient client, String chatJid) {
+        List<CtaButton> buttons = List.of(
+            CtaButton.url("🌐 Visit GitHub", "https://github.com/jochris/JaWa"),
+            CtaButton.copy("📋 Copy Code", "JAWA-PROMO-2026"),
+            CtaButton.quickReply("🏓 Ping Bot", "ping_cmd")
+        );
+
+        var msg = MessageEncoder.interactiveCtaButtons(
+            "*Interactive CTA Buttons Example*",
+            "Choose an action below:",
+            buttons
+        );
+        client.sendMessage(chatJid, msg);
     }
-});
-```
 
-### Bootstrap Signal Sessions
+    public static void sendDropdownList(JaWaClient client, String chatJid) {
+        List<CtaButton> buttons = List.of(
+            CtaButton.singleSelect("Open Menu 📋", List.of(
+                new ListSection("Main Actions", List.of(
+                    new ListRow("ping_cmd", "Ping Server", "Check server uptime & health"),
+                    new ListRow("menu_cmd", "Show Menu", "Display main navigation")
+                )),
+                new ListSection("Demos", List.of(
+                    new ListRow("buttons_cmd", "CTA Buttons", "Test interactive buttons"),
+                    new ListRow("carousel_cmd", "Carousel Slider", "Test card carousel")
+                ))
+            ))
+        );
 
-Pre-warm libsignal sessions to every device of a user. Useful before a send so the
-first message doesn't pay the X3DH cost.
-
-```java
-client.bootstrapSessions("628xxxxxxxxx@s.whatsapp.net").thenAccept(addresses -> {
-    System.out.println("Installed " + addresses.size() + " Signal session(s)");
-    addresses.forEach(System.out::println);
-});
-```
-
-## Groups
-
-### List Joined Groups
-
-Returns groups you participate in (`<iq xmlns="w:g2"><participating/></iq>`).
-
-```java
-client.queryJoinedGroups().thenAccept(groups -> {
-    for (var g : groups) {
-        System.out.println(g.jid()
-            + "  subject=\"" + g.subject() + "\""
-            + "  participants=" + g.participantJids().size());
+        var msg = MessageEncoder.interactiveCtaButtons(
+            "*Dropdown Selection List Example*",
+            "Select an option from the menu:",
+            buttons
+        );
+        client.sendMessage(chatJid, msg);
     }
-});
+}
 ```
 
-### Create Group
+---
+
+### 5. Carousel Cards Slider
+
+Send horizontal scrolling carousel cards featuring images, descriptions, and action buttons:
 
 ```java
-String newGroupJid = client.createGroup(
-    "My Cool Group",
-    List.of("628aaa@s.whatsapp.net", "628bbb@s.whatsapp.net")
-).join();
+package com.example;
+
+import id.jawa.client.JaWaClient;
+import id.jawa.feature.messaging.MessageEncoder.CtaButton;
+
+import java.util.List;
+
+public class CarouselExample {
+
+    public static void sendCarouselSlider(JaWaClient client, String chatJid, byte[] imageBytes) {
+        List<JaWaClient.CarouselCardInput> cards = List.of(
+            new JaWaClient.CarouselCardInput(
+                "Card 1: Feature Overview",
+                "Learn more about JaWa features",
+                imageBytes,
+                "image/jpeg",
+                "Slide 1",
+                List.of(CtaButton.quickReply("Select Card 1", "card_1_cmd"))
+            ),
+            new JaWaClient.CarouselCardInput(
+                "Card 2: Documentation",
+                "Read the official guide & docs",
+                imageBytes,
+                "image/jpeg",
+                "Slide 2",
+                List.of(CtaButton.quickReply("Select Card 2", "card_2_cmd"))
+            )
+        );
+
+        client.sendCarousel(chatJid, "*Swipe cards horizontally:*", "Carousel Demo", cards, null);
+    }
+}
 ```
 
-Don't include your own JID in the participants — the server adds it implicitly.
-Subject limit is 25 characters server-side; longer will reject with `406 not acceptable`.
+---
 
-### Leave Group
+## 📄 License
 
-```java
-client.leaveGroup("120363...@g.us").join();
-```
-
-### Add / Remove / Promote / Demote Participants
-
-All four actions go through the same API; pass the right `ParticipantChange` enum.
-Requires admin rights on the target group.
-
-```java
-import id.jawa.message.GroupAction.ParticipantChange;
-
-client.updateGroupParticipants(groupJid, ParticipantChange.ADD,     List.of("628xxx@s.whatsapp.net")).join();
-client.updateGroupParticipants(groupJid, ParticipantChange.REMOVE,  List.of("628yyy@s.whatsapp.net")).join();
-client.updateGroupParticipants(groupJid, ParticipantChange.PROMOTE, List.of("628zzz@s.whatsapp.net")).join();
-client.updateGroupParticipants(groupJid, ParticipantChange.DEMOTE,  List.of("628zzz@s.whatsapp.net")).join();
-```
-
-### Change Subject
-
-```java
-client.setGroupSubject(groupJid, "New group name").join();
-```
-
-### Set / Clear Description (Topic)
-
-```java
-// set
-client.setGroupDescription(groupJid, "Welcome to the chat", /* previousId = */ null).join();
-
-// clear
-client.setGroupDescription(groupJid, null, /* previousId = */ "<current-topic-id>").join();
-```
-
-`previousId` is the current description's id (you track it from a prior `setGroupDescription`
-call or fetch from group metadata). Pass `null` when there is no prior description.
-
-## Low-level APIs
-
-For protocol experimentation or features JaWa doesn't expose yet.
-
-### Send Raw Stanza
-
-```java
-import id.jawa.binary.BinaryNode;
-
-// <chatstate from="..."><composing/></chatstate>
-client.send(new BinaryNode("chatstate",
-    Map.of("to", "628xxx@s.whatsapp.net"),
-    List.of(BinaryNode.of("composing"))));
-```
-
-> [!NOTE]
-> `<presence type="available">` is **emitted automatically** after every successful
-> login (with `creds.pushName` as the display name), so peers see the device as
-> online and the server delivers new `<message>` stanzas. You don't need to send
-> it manually.
-
-### Send IQ with Response
-
-`sendIqAsync` returns a future that completes when the matching `<iq type="result|error">`
-arrives. IQ IDs are 16-hex-char random; JaWa correlates the response by id.
-
-```java
-BinaryNode iq = new BinaryNode("iq", Map.of(
-    "id",    "1234567890abcdef",
-    "type",  "get",
-    "xmlns", "w:profile:picture",
-    "to",    "628xxxxxxxxx@s.whatsapp.net"
-), List.of(BinaryNode.of("picture", Map.of("type", "image"))));
-
-client.sendIqAsync(iq).thenAccept(response -> {
-    System.out.println("got response: " + response);
-});
-```
-
-> [!WARNING]
-> IQ callbacks fire on the reader thread. Don't block in them.
-
-## Status — what works today
-
-- [x] **M0** — Maven skeleton, JDK 21 toolchain, full dep graph
-- [x] **M1** — Binary Node codec (encode/decode, 4 JID variants, packed nibble/hex, token dictionary) — 19 unit tests
-- [x] **M2** — Noise XX handshake + WebSocket transport, server CertChain validation
-- [x] **M3** — ClientPayload (register + login)
-- [x] **M4** — QR pairing (live-verified end-to-end: scan → ADV chain verify → creds persist → login)
-- [x] **M4.5** — Phone-number pairing code (PBKDF2 + AES-CTR wrap, X25519 × 2 + HKDF advSecret derivation; live-verified)
-  - [x] **M4.5.1** — `companion_hello` wire-value fix (`platform_id="1"`, canonical display, nibble-packed nonce) + steady-state hardening (w:p keepalive, per-stanza error containment)
-  - [x] **M4.5.2** — Post-pair auto-reconnect to login mode (`FrameSocket` disconnect sentinel + `JaWaClient` reconnect handler; closes the 401-revoke window)
-- [x] **M5** — Send + receive text 1-on-1 (live-verified end-to-end against a real account: send, decode inbound text, ack + delivery receipt)
-  - [x] Pre-key upload (`<iq xmlns=encrypt>`)
-  - [x] USync device list query
-  - [x] Signal session bootstrap (libsignal X3DH)
-  - [x] Encrypt + send `<message>`
-  - [x] **M5.D.1** — `DeviceSentMessage` wrap for own-companion devices (fixes silent-drop on send-to-self)
-  - [x] **M5.D.2** — Fan out outgoing message to own companion devices on non-self send (sender's own phone now sees the outgoing message in chat history)
-  - [x] **M5.E** — Receive + decrypt incoming `<enc>` (`MessageReceiver` + `<ack>` + delivery `<receipt>` + active-mode IQ on login)
-  - [x] **M5.E.1** — Seed `creds.signedPreKey` into `JaWaProtocolStore` (unblocks first-contact `pkmsg` decrypt)
-  - [x] **M5.E.2** — Retry receipt with `<retry count>` + `<registration>` reg-id so peer re-encrypts on decrypt failure
-  - [x] **M5.E.3** — Mirror generated one-time pre-keys into the libsignal `protocolStore` (was only in the raw `SignalKeyStore`)
-- [x] **M6** — Receipts, retries, ack flow
-  - [x] auto-ack inbound `<notification>` and `<receipt>` (core fix, prevents offline queue stall)
-  - [x] `<receipt type="retry">` for inbound decrypt failures (M5.E.2)
-  - [x] `sendReadReceipt` / `sendPlayedReceipt` / `sendReadReceiptBatch` public APIs
-  - [x] `Listener.onReceipt(Receipt)` callback so consumers see peer-side delivery / read / played lifecycle
-- [x] **M7** — Group messaging (Sender Keys distribution + skmsg)
-  - [x] **M7 (recv)** — group `skmsg` decrypt + `SenderKeyDistributionMessage` processing on inbound
-  - [x] **M7.G1** — query joined groups via `<iq xmlns="w:g2"><participating/></iq>`
-  - [x] **M7.G2** — send text message to a group (per-device SKDM fan-out + single `<enc type=skmsg>`)
-  - [x] **M7.G3** — lifecycle ops via `<iq xmlns="w:g2" type="set">`: `createGroup`, `leaveGroup`, `updateGroupParticipants` (add / remove / promote / demote), `setGroupSubject`, `setGroupDescription`
-- [x] **M8** — Media upload/download (HKDF-AES-CBC + HMAC, mediaConn)
-  - [x] **M8.A** — media crypto primitives (AES-CBC + HKDF expand → iv/cipherKey/macKey + truncated HMAC, plus type-isolated info strings)
-  - [x] **M8.B** — `<iq xmlns="w:m"><media_conn/></iq>` query + TTL-cached `MediaConn` record
-  - [x] **M8.C** — HTTPS upload to `https://<host>/mms/<type>/<token>` via JDK HttpClient
-  - [x] **M8.D** — `imageMessage` proto + `sendImage(chatJid, bytes, mimetype, caption)` API (DM + group)
-  - [x] **M8.E** — `videoMessage` / `audioMessage` / `documentMessage` proto builders + `sendVideo` / `sendAudio` / `sendDocument` APIs (all reuse the M8.A-D crypto + upload)
-  - [x] **M8.F** — receive-side `MediaDownloader` (URL or directPath via mediaConn host fan-out, envelope SHA-256 check, MAC verify, AES-CBC decrypt) + `JaWaClient.downloadMedia` async API
-- [x] **M9** — App-state sync (LT-Hash, mutations, contact list, chat sync)
-  - [x] `id.jawa.appstate.LtHash` — pointwise summing 128-byte state, add / subtract digest pairs via HKDF-expanded 64-byte chunks; the `WhatsApp Patch Integrity` instance is what verifies a collection's mutations agree with the server's view (4 unit tests)
-  - [x] `AppStateKey` + `Expanded` — 32-byte shared key + HKDF-SHA256 expansion into the 5 sub-keys (index / valueEnc / valueMAC / snapshotMAC / patchMAC)
-  - [x] `PatchName` enum — every WhatsApp collection (`critical_block`, `critical_unblock_low`, `regular_low`, `regular_high`, `regular`)
-  - [x] `FileAppStateKeyStorage` — per-key file under `<signalDir>/appstate-keys/`, atomic write-through. Companion devices only receive these once on first online; persistence is non-optional.
-  - [x] **Inbound capture** — `JaWaClient.captureAppStateKeysFrom` watches every decoded inbound message for a `protocolMessage.appStateSyncKeyShare` and persists each key. Fires `Listener.onAppStateKeysReceived(count)`.
-  - [x] `AppStateSyncQuery.buildSnapshotRequest` / `buildPatchRequest` — `<iq xmlns="w:sync:app:state" type="set"><sync><collection name=... return_snapshot=... version=.../></sync></iq>`; `parseResponse` returns `PatchList(name, hasMore, snapshot, patches, externalSnapshot)`.
-  - [x] `AppStateProcessor.decode(SyncdMutation)` — pulls the matching key from storage, splits the value blob into iv + ciphertext + valueMAC, optionally verifies the MAC (HMAC-SHA512[:32] over `op || keyId || ct || keyIdLen`), AES-CBC decrypts, and unmarshals into `Wa.SyncActionData`. `decodeSnapshot` / `decodePatch` iterate the corresponding container.
-  - [x] `JaWaClient.requestAppStateSync(PatchName, fromVersion)` — fires the IQ, decodes the response end-to-end, dispatches `Listener.onAppStateMutations(name, mutations)`.
-  - [ ] **Open follow-up:** auto-request missing keys via `protocolMessage.appStateSyncKeyRequest` when a sync surfaces a key id we don't have; download external snapshot blobs via mediaConn; persist per-collection LT-Hash state to feed back into the IQ. Until then, freshly-paired devices may surface "missing app-state key id=..." warnings on the first sync until the primary phone shares the keys naturally.
-- [x] **M10** — Reconnect, error handling, ban detection
-  - [x] **M10.A** — auto-reconnect on unexpected WS close with exponential back-off (2s → 60s cap); `<failure>` stanzas (e.g. `reason=401`) flag the session terminal so a revoked device doesn't loop forever. `client.autoReconnect(false)` opts out.
-  - [x] **M10.B** — categorised `Listener.onTerminated(TerminationReason, detail, permanent)`: `REVOKED` (401), `BANNED` (403/co_block), `VERSION_OBSOLETE` (405), `REPLACED` (`<stream:error><conflict type="replaced"/>`), `TRANSIENT` (5xx, generic stream:error), `UNKNOWN`. Permanent reasons suppress auto-reconnect; transient ones let the back-off ladder keep trying.
-- [ ] **M11** — Misc message types (reactions, edits, polls, replies, lists)
-  - [x] **M11.A** — send reaction to a message (DM + group)
-  - [x] **M11.B** — send quoted reply (DM + group)
-  - [x] **M11.C** — edit a previously-sent message (DM + group)
-  - [x] **M11.D** — revoke (delete-for-everyone) a message (DM + group)
-  - [x] **M11.E.A** — `sendListMessage` (dropdown of selectable rows, multi-section); receiver renders proper list sheet
-  - [x] **M11.E.B** — `sendButtonsMessage` (quick-reply buttons, max 3); receiver renders proper button bubbles
-  - [x] **M11.E.biz** — append `<biz>` stanza node alongside `<message>` when payload is buttons/list/interactive/template — without this the receiver app silently drops the interactive surface
-  - [x] **M11.E.C** — CTA buttons via `interactiveMessage.nativeFlowMessage`: `CtaButton.url`, `.copy`, `.call`, `.quickReply`, `.singleSelect` — confirmed rendering on regular accounts
-  - [x] **M11.F** — `sendTextWithMentions` — tag users via `extendedTextMessage.contextInfo.mentionedJid`; recipient renders each `@<number>` in the body as a tappable handle and pings the mentioned user in groups
-  - [x] **M11.E.D** — `sendPoll` — native poll bubble via `pollCreationMessageV3` (single-select) or `pollCreationMessage` V1 (multi); per-poll random 32-byte vote encryption key ridden in `messageContextInfo.messageSecret`
-  - [x] **M11.E.D.recv** — `PollDecoder.decryptVote` — HKDF-derived AES-256-GCM decrypt of an inbound `pollUpdateMessage.vote.encPayload`; matches the 32-byte SHA-256 hashes in the plaintext back to the original option names
-  - [x] **M11.G** — view-once: `sendImageViewOnce` / `sendVideoViewOnce` / `sendAudioViewOnce` wrap the inner media in `viewOnceMessageV2` (image/video) or `viewOnceMessageV2Extension` (audio); receiver can open the media exactly once before it's purged
-  - [x] **M11.H** — receive interactive responses: `Decoded.interactive` carries the parsed `buttonsResponseMessage` / `listResponseMessage` / `interactiveResponseMessage` so bots can react to button / row / native-flow taps
-  - [x] **M11.I** — `sendLocation` (static map pin via `locationMessage`) + `sendContact` (vCard via `contactMessage`)
-  - [x] **M11.E.G** — carousel with media header: `sendCarousel(chatJid, body?, footer?, List<CarouselCardInput>)` uploads every card's image / video in parallel, builds the inner `imageMessage` / `videoMessage` for each card header, and ships the whole `interactiveMessage.carouselMessage` in one go. Live-verified rendering on regular accounts with three JPEG cards.
-- [x] **M12** — Pluggable storage backends (in-memory, file, SQLite)
-  - [x] **M12.A** — file-backed libsignal `SessionStore` (sessions survive restart, no `NoSessionException`/retry-receipt churn for previously-paired peers)
-  - [x] **M12.B** — file-backed JaWa pre-key store (one-time pre-keys survive restart, re-mirrored into libsignal on connect)
-  - [x] **M12.C** — file-backed sender-key store (group sender-chain state survives restart, no SKDM re-distribution on first outbound group message after reconnect)
-  - [x] **M12.D** — `FilePreKeyStorage.pruneKeepHighest(n)`; JaWaClient auto-prunes to the 600 highest pre-key ids on connect, capping disk usage at ~20 sessions worth and stopping the startup-delay-then-server-timeout failure seen at ~7000+ accumulated keys
-- [x] **core** — `<presence type="available">` on login + ack `<notification>`/`<receipt>` (without these the server treats the device as offline and stops delivering `<message>` stanzas)
-
-## Gotchas
-
-- **Protobuf is pinned to 3.10.0** via `resolutionStrategy`. `signal-protocol-java:2.8.1`
-  ships `protobuf-javalite:3.10.0`, which is incompatible with newer protobuf-java
-  schema parsing. **Do not bump protobuf** without end-to-end testing libsignal.
-- **License is GPL-3.0-or-later, non-negotiable** — cascades from `signal-protocol-java`.
-  Every new source file must start with `// SPDX-License-Identifier: GPL-3.0-or-later`.
-- **`WA_VERSION`** — if the server starts rejecting with stream errors mentioning an
-  obsolete client, bump it in `WaConstants` from the latest Baileys
-  `Defaults/baileys-version.json` or whatsmeow `store.WAVersion`.
-- **Reader-thread reentrancy** — `sendText`/`sendIq` are safe from any thread (they
-  enqueue), but `Listener.onMessage`/`onStanza`/IQ-callbacks run on the reader. Long
-  work there stalls all inbound traffic — offload to a virtual thread.
-- **`creds.account == null` is the "is pairing" signal** — used by `connect()` to
-  choose register vs login payload, and by `requestPairingCode` to refuse if already
-  paired. Don't repurpose that field.
-
-## Contributing
-
-Issues / PRs / architectural feedback welcome. Run `mvn clean test` before
-submitting; CI will block merges with failing tests.
-
-If you're porting a protocol feature, **always read the upstream first**. Baileys
-and whatsmeow disagree about details often enough that picking the right reference
-matters. The pattern that's worked so far: implement against whatsmeow's Go (cleanest
-API), cross-check Baileys for any field the Go side omits.
-
-## License
-
-GPL-3.0-or-later. See [LICENSE](LICENSE).
-
-Copyleft is inherited from `signal-protocol-java`. Any project that depends on JaWa
-must comply with GPL-3.0-or-later terms.
+This project is licensed under the terms of the **GNU General Public License v3.0** (GPL-3.0-or-later). See [LICENSE](LICENSE) for details.

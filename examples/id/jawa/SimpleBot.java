@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 package id.jawa;
 
 import id.jawa.protocol.connection.*;
@@ -12,7 +12,6 @@ import id.jawa.feature.media.*;
 import id.jawa.feature.appstate.*;
 import id.jawa.feature.signal.*;
 
-
 import id.jawa.domain.model.ChatPresence;
 import id.jawa.client.JaWaClient;
 import id.jawa.feature.messaging.MessageEncoder;
@@ -21,8 +20,11 @@ import id.jawa.feature.messaging.MessageEncoder.ListSection;
 import id.jawa.feature.messaging.MessageEncoder.ListRow;
 import id.jawa.domain.store.FileAuthStore;
 
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
 
 /**
  * A simple, highly interactive WhatsApp Bot using the JaWa library.
@@ -32,8 +34,11 @@ import java.util.List;
  * 3. Horizontal scrolling Carousels (with dynamically generated dummy image cards).
  * 4. List Messages (dropdown select options).
  * 5. Interactive callback responses (handling button/row clicks).
+ * 6. Owner shell execution (> <cmd> or .exec <cmd>) with automatic LID-to-PN resolution.
  */
 public final class SimpleBot {
+
+    public static final String OWNER_NUMBER = System.getProperty("jawa.owner", "62895416602000");
 
     public static void main(String[] args) throws Exception {
         Path sessionFile = Path.of(System.getProperty("jawa.session", "sessions/default.session"));
@@ -48,6 +53,7 @@ public final class SimpleBot {
         System.out.println("=== JaWa Simple Interactive Bot ===");
         System.out.println("Session: " + sessionFile.toAbsolutePath());
         System.out.println("Signal : " + signalDir.toAbsolutePath());
+        System.out.println("Owner  : +" + OWNER_NUMBER);
 
         FileAuthStore store = new FileAuthStore(sessionFile);
         JaWaClient client = new JaWaClient(store, signalDir).autoReconnect(true);
@@ -84,7 +90,7 @@ public final class SimpleBot {
             public void onMessage(id.jawa.feature.messaging.MessageReceiver.Decoded d) {
                 String chatJid = d.groupJid() != null ? d.groupJid() : d.senderJid();
 
-                // 1. Handle interactive response callback (button or row click)
+                /* 1. Handle interactive response callback (button or row click) */
                 if (d.interactive() != null) {
                     var ir = d.interactive();
                     System.out.println(">>> Interactive click: " + ir.kind() + " / ID: " + ir.selectedId());
@@ -92,10 +98,19 @@ public final class SimpleBot {
                     return;
                 }
 
-                // 2. Handle plain text message commands
+                /* 2. Handle plain text message commands */
                 if (d.text() != null) {
-                    String cmd = d.text().trim().toLowerCase();
-                    handleCommand(client, chatJid, cmd, d);
+                    String rawText = d.text().trim();
+                    if (rawText.startsWith("> ")) {
+                        handleExec(client, chatJid, rawText.substring(2).trim(), d);
+                    } else if (rawText.startsWith(">")) {
+                        handleExec(client, chatJid, rawText.substring(1).trim(), d);
+                    } else if (rawText.toLowerCase().startsWith(".exec ")) {
+                        handleExec(client, chatJid, rawText.substring(6).trim(), d);
+                    } else {
+                        String cmd = rawText.toLowerCase();
+                        handleCommand(client, chatJid, cmd, d);
+                    }
                 }
             }
 
@@ -107,6 +122,40 @@ public final class SimpleBot {
 
         client.connect();
         client.join();
+    }
+
+    private static boolean isOwner(String senderJid) {
+        if (senderJid == null) return false;
+
+        String cleanOwner = OWNER_NUMBER.replaceAll("[^0-9]", "");
+        String userPart = senderJid.split("@")[0].split(":")[0];
+        String cleanSender = userPart.replaceAll("[^0-9]", "");
+
+        /* 1. Direct PN check */
+        if (cleanSender.equals(cleanOwner)) {
+            return true;
+        }
+
+        /* 2. LID to PN resolution via JaWaClient.LID_TO_PN_MAP */
+        String bareLid = userPart + "@lid";
+        String mappedPn = JaWaClient.LID_TO_PN_MAP.get(bareLid);
+        if (mappedPn != null) {
+            String cleanMappedPn = mappedPn.split("@")[0].split(":")[0].replaceAll("[^0-9]", "");
+            if (cleanMappedPn.equals(cleanOwner)) {
+                return true;
+            }
+        }
+
+        /* 3. Optional owner LID property check (-Djawa.owner_lid=...) */
+        String ownerLid = System.getProperty("jawa.owner_lid");
+        if (ownerLid != null && !ownerLid.isBlank()) {
+            String cleanOwnerLid = ownerLid.split("@")[0].split(":")[0].replaceAll("[^0-9]", "");
+            if (cleanSender.equals(cleanOwnerLid)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static void handleCommand(JaWaClient client, String chatJid, String cmd, id.jawa.feature.messaging.MessageReceiver.Decoded d) {
@@ -123,6 +172,61 @@ public final class SimpleBot {
         }
     }
 
+    private static void handleExec(JaWaClient client, String chatJid, String commandStr, id.jawa.feature.messaging.MessageReceiver.Decoded d) {
+        String senderJid = d != null ? d.senderJid() : null;
+        if (!isOwner(senderJid)) {
+            System.out.println(">>> Exec denied for sender: " + senderJid + " (Owner required: " + OWNER_NUMBER + ")");
+            var msg = MessageEncoder.text("⚠️ *Akses Ditolak!* Perintah exec hanya dapat dijalankan oleh Owner bot (+" + OWNER_NUMBER + ").\n\nSender JID: `" + senderJid + "`");
+            if (d != null) {
+                String quotedSender = d.groupJid() != null ? d.senderJid() : null;
+                msg = MessageEncoder.quote(msg, d.msgId(), quotedSender, d.text() != null ? d.text() : "");
+            }
+            client.sendMessage(chatJid, msg);
+            return;
+        }
+
+        System.out.println(">>> Exec granted for owner " + senderJid + ": " + commandStr);
+        client.sendChatPresence(chatJid, ChatPresence.COMPOSING);
+        try {
+            Process process = new ProcessBuilder("bash", "-c", commandStr)
+                    .redirectErrorStream(true)
+                    .start();
+
+            BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+            StringBuilder output = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) {
+                output.append(line).append("\n");
+            }
+            boolean finished = process.waitFor(10, TimeUnit.SECONDS);
+            if (!finished) {
+                process.destroyForcibly();
+                output.append("\n[Execution timed out after 10s]");
+            }
+
+            String resultText = output.toString().trim();
+            if (resultText.isEmpty()) {
+                resultText = "(Command executed successfully with no output)";
+            }
+
+            String response = "💻 *Exec Result:*\n```\n" + resultText + "\n```";
+            var msg = MessageEncoder.text(response);
+            if (d != null) {
+                String quotedSender = d.groupJid() != null ? d.senderJid() : null;
+                msg = MessageEncoder.quote(msg, d.msgId(), quotedSender, d.text() != null ? d.text() : "");
+            }
+            client.sendMessage(chatJid, msg);
+        } catch (Exception e) {
+            String response = "❌ *Exec Error:*\n```\n" + e.getMessage() + "\n```";
+            var msg = MessageEncoder.text(response);
+            if (d != null) {
+                String quotedSender = d.groupJid() != null ? d.senderJid() : null;
+                msg = MessageEncoder.quote(msg, d.msgId(), quotedSender, d.text() != null ? d.text() : "");
+            }
+            client.sendMessage(chatJid, msg);
+        }
+    }
+
     private static void sendMenu(JaWaClient client, String chatJid, id.jawa.feature.messaging.MessageReceiver.Decoded d) {
         client.sendChatPresence(chatJid, ChatPresence.COMPOSING);
         List<CtaButton> buttons = List.of(
@@ -132,11 +236,14 @@ public final class SimpleBot {
                 new ListSection("Pilihan Menu", List.of(
                     new ListRow("buttons_cmd", "CTA Buttons", "Tampilkan tombol URL, Copy, & Call"),
                     new ListRow("list_cmd", "Dropdown List", "Tampilkan daftar menu pilihan")
+                )),
+                new ListSection("Owner Commands", List.of(
+                    new ListRow("exec_info", "Owner Exec Command", "Gunakan > <cmd> atau .exec <cmd>")
                 ))
             ))
         );
         var msg = id.jawa.feature.messaging.MessageEncoder.interactiveCtaButtons(
-            "*Hello! Silakan pilih menu di bawah ini:*", "JaWa Bot Menu", buttons
+            "*Hello! Silakan pilih menu di bawah ini:*", "JaWa Bot Menu (Owner: +" + OWNER_NUMBER + ")", buttons
         );
         if (d != null) {
             String quotedSender = d.groupJid() != null ? d.senderJid() : null;
@@ -159,7 +266,8 @@ public final class SimpleBot {
             "• *OS*: %s\n" +
             "• *CPU Cores*: %d\n" +
             "• *Java Version*: %s\n" +
-            "• *Active Threads*: %d\n\n" +
+            "• *Active Threads*: %d\n" +
+            "• *Owner*: +%s\n\n" +
             "_*Memory Status:*_\n" +
             "• *Used Memory*: %d MB\n" +
             "• *Total Memory*: %d MB\n" +
@@ -168,6 +276,7 @@ public final class SimpleBot {
             Runtime.getRuntime().availableProcessors(),
             System.getProperty("java.version"),
             Thread.activeCount(),
+            OWNER_NUMBER,
             usedMemory,
             totalMemory,
             freeMemory
@@ -203,7 +312,7 @@ public final class SimpleBot {
     private static void sendCarousel(JaWaClient client, String chatJid, id.jawa.feature.messaging.MessageReceiver.Decoded d) {
         client.sendChatPresence(chatJid, ChatPresence.COMPOSING);
 
-        // Generate dummy red and green images dynamically to satisfy WA's media header requirement
+        /* Generate dummy red and green images dynamically to satisfy WA's media header requirement */
         byte[] redImageBytes = getDummyImageBytes(0xFF0000);
         byte[] greenImageBytes = getDummyImageBytes(0x00FF00);
 

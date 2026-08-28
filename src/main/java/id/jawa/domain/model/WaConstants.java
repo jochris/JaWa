@@ -53,7 +53,7 @@ public final class WaConstants {
     public static final byte[] ADV_HOSTED_DEVICE_SIG_PREFIX  = new byte[] { 6, 6 };
 
     /** WA Web version. Bump if "client too old" responses come back. */
-    public static final int[] WA_VERSION = new int[] { 2, 3000, 1035194821 };
+    public static final int[] WA_VERSION = new int[] { 2, 3000, 1044834443 };
 
     private WaConstants() {}
 
