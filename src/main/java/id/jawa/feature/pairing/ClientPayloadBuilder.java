@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 package id.jawa.feature.pairing;
 
 import id.jawa.protocol.connection.*;
@@ -12,7 +12,6 @@ import id.jawa.feature.media.*;
 import id.jawa.feature.appstate.*;
 import id.jawa.feature.signal.*;
 
-
 import com.google.protobuf.ByteString;
 import id.jawa.domain.model.WaConstants;
 import id.jawa.proto.Wa;
@@ -25,21 +24,12 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 
 /**
- * Builds the {@code ClientPayload} that goes into {@code HandshakeMessage.clientFinish.payload}.
- *
- * <p>Two flavours:
- * <ul>
- *   <li>{@link #register(AuthCreds)} — first connect, server sends back QR refs
- *   <li>{@link #login(AuthCreds)} — reconnect with persisted creds
- * </ul>
- *
- * <p>Mirrors {@code generateRegistrationNode} and {@code generateLoginNode} in Baileys'
- * {@code Utils/validate-connection.ts}.
+ * Builds the ClientPayload matching official WhatsApp Web browser client handshake telemetries.
  */
 public final class ClientPayloadBuilder {
 
-    /** Browser identification: {OS-name, browser-name, version}. */
-    public static final String[] DEFAULT_BROWSER = { "JaWa", "Chrome", "0.1.0" };
+    /* Browser identification matching official Chrome desktop environment */
+    public static final String[] DEFAULT_BROWSER = { "Linux", "Chrome", "128.0.0.0" };
     public static final String DEFAULT_COUNTRY_CODE = "ID";
     public static final String DEFAULT_LANGUAGE_CODE = "id";
 
@@ -47,9 +37,6 @@ public final class ClientPayloadBuilder {
 
     public static Wa.ClientPayload register(AuthCreds creds) {
         byte[] regIdBE = encodeUint32BE(creds.registrationId);
-        // Some clients encode registrationId as 4-byte BE, others as 2-byte. WhatsApp's
-        // wire schema expects 2 bytes for registrationId since it fits in uint16.
-        // Match Baileys: encodeBigEndian(registrationId) defaults to 4 bytes.
 
         Wa.DeviceProps deviceProps = Wa.DeviceProps.newBuilder()
                 .setOs(DEFAULT_BROWSER[0])
@@ -90,8 +77,6 @@ public final class ClientPayloadBuilder {
                 .build();
     }
 
-    // ---- helpers ----
-
     private static Wa.ClientPayload.Builder common() {
         Wa.ClientPayload.UserAgent.AppVersion ver = Wa.ClientPayload.UserAgent.AppVersion.newBuilder()
                 .setPrimary(WaConstants.WA_VERSION[0])
@@ -103,9 +88,9 @@ public final class ClientPayloadBuilder {
                 .setAppVersion(ver)
                 .setPlatform(Wa.ClientPayload.UserAgent.Platform.WEB)
                 .setReleaseChannel(Wa.ClientPayload.UserAgent.ReleaseChannel.RELEASE)
-                .setOsVersion("0.1")
+                .setOsVersion("10.0")
                 .setDevice("Desktop")
-                .setOsBuildNumber("0.1")
+                .setOsBuildNumber("10.0")
                 .setLocaleLanguageIso6391(DEFAULT_LANGUAGE_CODE)
                 .setMnc("000")
                 .setMcc("000")
