@@ -216,9 +216,9 @@ public class QrPairingExample {
 
 ---
 
-## 🎛️ Client Configuration & Anti-Ban Features
+## 🎛️ Client Configuration
 
-`JaWaClient` provides fluent, chainable configuration options to customize bot behavior and minimize anti-bot detection:
+`JaWaClient` provides fluent, chainable configuration options to customize bot and connection behavior:
 
 ```java
 JaWaClient client = new JaWaClient(store)
