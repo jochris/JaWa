@@ -216,6 +216,36 @@ public class QrPairingExample {
 
 ---
 
+## 🎛️ Client Configuration & Anti-Ban Features
+
+`JaWaClient` provides fluent, chainable configuration options to customize bot behavior and minimize anti-bot detection:
+
+```java
+JaWaClient client = new JaWaClient(store)
+    /* Auto-reconnect on transient network drop (default: true) */
+    .autoReconnect(true)
+
+    /* Automatically send 'read' receipt (blue ticks) when inbound messages arrive (default: false) */
+    .autoReadReceipt(true)
+
+    /* Automatically send 'composing' presence (typing...) before sending outgoing messages (default: false) */
+    .autoComposingPresence(true)
+
+    /* Automatically upload 30 fresh One-Time PreKeys when server stock is low (default: true) */
+    .autoPreKeyUpload(true);
+```
+
+### Configuration Options Reference
+
+| Method | Default | Description |
+| :--- | :--- | :--- |
+| `.autoReconnect(boolean)` | `true` | Automatically reconnects with exponential backoff on transient socket disconnects. |
+| `.autoReadReceipt(boolean)` | `false` | Sends an automatic `receipt type=read` (blue ticks) to the sender upon receiving inbound messages. |
+| `.autoComposingPresence(boolean)` | `false` | Sends a `composing` presence status (typing...) prior to dispatching outgoing messages. |
+| `.autoPreKeyUpload(boolean)` | `true` | Automatically uploads 30 fresh Signal One-Time PreKeys when server inventory falls below 5. |
+
+---
+
 ### 4. Interactive CTA Buttons & Selection Lists
 
 Send rich interactive call-to-action buttons (URL link, copy promo code, quick reply) and single-selection dropdown lists:
