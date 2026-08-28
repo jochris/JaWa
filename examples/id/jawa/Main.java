@@ -1,8 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package id.jawa;
 
-import id.jawa.core.JaWaClient;
-import id.jawa.store.FileAuthStore;
+import id.jawa.protocol.connection.*;
+import id.jawa.protocol.codec.*;
+import id.jawa.protocol.crypto.*;
+import id.jawa.domain.model.*;
+import id.jawa.domain.store.*;
+import id.jawa.feature.pairing.*;
+import id.jawa.feature.messaging.*;
+import id.jawa.feature.media.*;
+import id.jawa.feature.appstate.*;
+import id.jawa.feature.signal.*;
+
+
+import id.jawa.client.JaWaClient;
+import id.jawa.domain.store.FileAuthStore;
 
 import java.nio.file.Path;
 
@@ -63,7 +75,7 @@ public final class Main {
                 System.out.println();
                 System.out.println(">>> Open WhatsApp → Settings → Linked Devices → Link a Device, then scan:");
                 System.out.println();
-                System.out.print(id.jawa.util.QrTerminal.render(qrs.get(0)));
+                System.out.print(id.jawa.feature.pairing.QrTerminal.render(qrs.get(0)));
                 System.out.println();
                 System.out.println(">>> ref 1/" + qrs.size() + " — refs rotate every ~30 s; scan within window");
                 System.out.println();
@@ -74,7 +86,7 @@ public final class Main {
                 // Optional: request an app-state sync (-Djawa.appstate=regular_low|regular_high|regular|critical_block|critical_unblock_low).
                 String appstate = System.getProperty("jawa.appstate");
                 if (appstate != null && !appstate.isBlank()) {
-                    id.jawa.appstate.PatchName name = id.jawa.appstate.PatchName.fromWire(appstate);
+                    id.jawa.feature.appstate.PatchName name = id.jawa.feature.appstate.PatchName.fromWire(appstate);
                     if (name == null) { System.err.println(">>> unknown collection: " + appstate); return; }
                     long fromVersion = Long.parseLong(System.getProperty("jawa.appstate_version", "-1"));
                     client.requestAppStateSync(name, fromVersion).whenComplete((muts, err) -> {
@@ -150,39 +162,39 @@ public final class Main {
                 String demoChat = System.getProperty("jawa.demo_chat");
                 String demo = System.getProperty("jawa.demo");
                 if (demoChat != null && !demoChat.isBlank() && demo != null) {
-                    java.util.List<id.jawa.message.MessageEncoder.CtaButton> mix;
+                    java.util.List<id.jawa.feature.messaging.MessageEncoder.CtaButton> mix;
                     switch (demo) {
                         case "mixed_cta" -> {
                             mix = java.util.List.of(
-                                id.jawa.message.MessageEncoder.CtaButton.url("🌐 Open repo", "https://github.com/jochris/JaWa"),
-                                id.jawa.message.MessageEncoder.CtaButton.copy("📋 Copy code", "JAWA-2026"),
-                                id.jawa.message.MessageEncoder.CtaButton.call("📞 Call WA", "+62895416602000"),
-                                id.jawa.message.MessageEncoder.CtaButton.quickReply("✨ Quick reply", "qr_hello")
+                                id.jawa.feature.messaging.MessageEncoder.CtaButton.url("🌐 Open repo", "https://github.com/jochris/JaWa"),
+                                id.jawa.feature.messaging.MessageEncoder.CtaButton.copy("📋 Copy code", "JAWA-2026"),
+                                id.jawa.feature.messaging.MessageEncoder.CtaButton.call("📞 Call WA", "+62895416602000"),
+                                id.jawa.feature.messaging.MessageEncoder.CtaButton.quickReply("✨ Quick reply", "qr_hello")
                             );
                             client.sendCtaButtons(demoChat, "Mixed CTA demo 🚀", "JaWa v0.0.3", mix)
                                 .whenComplete((id, err) -> System.out.println(err != null ? ">>> err " + err : ">>> Sent mixed_cta id=" + id));
                         }
                         case "single_select" -> {
-                            java.util.List<id.jawa.message.MessageEncoder.ListSection> sections = java.util.List.of(
-                                new id.jawa.message.MessageEncoder.ListSection("Commands", java.util.List.of(
-                                    new id.jawa.message.MessageEncoder.ListRow("ping", "Ping bot", "Cek bot hidup"),
-                                    new id.jawa.message.MessageEncoder.ListRow("info", "Server info", "Show server status")
+                            java.util.List<id.jawa.feature.messaging.MessageEncoder.ListSection> sections = java.util.List.of(
+                                new id.jawa.feature.messaging.MessageEncoder.ListSection("Commands", java.util.List.of(
+                                    new id.jawa.feature.messaging.MessageEncoder.ListRow("ping", "Ping bot", "Cek bot hidup"),
+                                    new id.jawa.feature.messaging.MessageEncoder.ListRow("info", "Server info", "Show server status")
                                 )),
-                                new id.jawa.message.MessageEncoder.ListSection("Owner", java.util.List.of(
-                                    new id.jawa.message.MessageEncoder.ListRow("exec", "Exec shell", "Owner-only")
+                                new id.jawa.feature.messaging.MessageEncoder.ListSection("Owner", java.util.List.of(
+                                    new id.jawa.feature.messaging.MessageEncoder.ListRow("exec", "Exec shell", "Owner-only")
                                 ))
                             );
                             mix = java.util.List.of(
-                                id.jawa.message.MessageEncoder.CtaButton.singleSelect("📋 Pick command", sections),
-                                id.jawa.message.MessageEncoder.CtaButton.url("📚 Docs", "https://github.com/jochris/JaWa#readme")
+                                id.jawa.feature.messaging.MessageEncoder.CtaButton.singleSelect("📋 Pick command", sections),
+                                id.jawa.feature.messaging.MessageEncoder.CtaButton.url("📚 Docs", "https://github.com/jochris/JaWa#readme")
                             );
                             client.sendCtaButtons(demoChat, "Single-select + URL demo", "JaWa", mix)
                                 .whenComplete((id, err) -> System.out.println(err != null ? ">>> err " + err : ">>> Sent single_select id=" + id));
                         }
                         case "quick_reply" -> {
                             mix = java.util.List.of(
-                                id.jawa.message.MessageEncoder.CtaButton.quickReply("✅ Confirm", "qr_yes"),
-                                id.jawa.message.MessageEncoder.CtaButton.quickReply("❌ Cancel",  "qr_no")
+                                id.jawa.feature.messaging.MessageEncoder.CtaButton.quickReply("✅ Confirm", "qr_yes"),
+                                id.jawa.feature.messaging.MessageEncoder.CtaButton.quickReply("❌ Cancel",  "qr_no")
                             );
                             client.sendCtaButtons(demoChat, "Quick-reply via interactive", null, mix)
                                 .whenComplete((id, err) -> System.out.println(err != null ? ">>> err " + err : ">>> Sent quick_reply id=" + id));
@@ -191,17 +203,17 @@ public final class Main {
                             // -Djawa.carousel_image=<path1>,<path2>,<path3> (jpegs)
                             String paths = System.getProperty("jawa.carousel_image", "");
                             if (paths.isEmpty()) { System.err.println(">>> need -Djawa.carousel_image=path1,path2,..."); return; }
-                            java.util.List<id.jawa.core.JaWaClient.CarouselCardInput> inputs = new java.util.ArrayList<>();
+                            java.util.List<id.jawa.client.JaWaClient.CarouselCardInput> inputs = new java.util.ArrayList<>();
                             String[] arr = paths.split(",");
-                            id.jawa.message.MessageEncoder.CtaButton[] btns = new id.jawa.message.MessageEncoder.CtaButton[] {
-                                id.jawa.message.MessageEncoder.CtaButton.url("🌐 Visit", "https://github.com/jochris/JaWa"),
-                                id.jawa.message.MessageEncoder.CtaButton.copy("📋 Copy", "JAWA-CARD"),
-                                id.jawa.message.MessageEncoder.CtaButton.quickReply("⭐ Star", "qr_star")
+                            id.jawa.feature.messaging.MessageEncoder.CtaButton[] btns = new id.jawa.feature.messaging.MessageEncoder.CtaButton[] {
+                                id.jawa.feature.messaging.MessageEncoder.CtaButton.url("🌐 Visit", "https://github.com/jochris/JaWa"),
+                                id.jawa.feature.messaging.MessageEncoder.CtaButton.copy("📋 Copy", "JAWA-CARD"),
+                                id.jawa.feature.messaging.MessageEncoder.CtaButton.quickReply("⭐ Star", "qr_star")
                             };
                             for (int i = 0; i < arr.length; i++) {
                                 try {
                                     byte[] bytes = java.nio.file.Files.readAllBytes(java.nio.file.Path.of(arr[i].trim()));
-                                    inputs.add(new id.jawa.core.JaWaClient.CarouselCardInput(
+                                    inputs.add(new id.jawa.client.JaWaClient.CarouselCardInput(
                                         "Card " + (i + 1), "Caption " + (i + 1),
                                         bytes, "image/jpeg", null,
                                         java.util.List.of(btns[i % btns.length])));
@@ -221,7 +233,7 @@ public final class Main {
                     String body = System.getProperty("jawa.cta_body", "");
                     String footer = System.getProperty("jawa.cta_footer", "");
                     String spec = System.getProperty("jawa.cta", "");
-                    java.util.List<id.jawa.message.MessageEncoder.CtaButton> btns = new java.util.ArrayList<>();
+                    java.util.List<id.jawa.feature.messaging.MessageEncoder.CtaButton> btns = new java.util.ArrayList<>();
                     for (String pair : spec.split("\\|")) {
                         if (pair.isBlank()) continue;
                         String[] parts = pair.split(":", 3);
@@ -230,9 +242,9 @@ public final class Main {
                         String label = parts[1];
                         String value = parts[2];
                         btns.add(switch (kind) {
-                            case "url"  -> id.jawa.message.MessageEncoder.CtaButton.url(label, value);
-                            case "copy" -> id.jawa.message.MessageEncoder.CtaButton.copy(label, value);
-                            case "call" -> id.jawa.message.MessageEncoder.CtaButton.call(label, value);
+                            case "url"  -> id.jawa.feature.messaging.MessageEncoder.CtaButton.url(label, value);
+                            case "copy" -> id.jawa.feature.messaging.MessageEncoder.CtaButton.copy(label, value);
+                            case "call" -> id.jawa.feature.messaging.MessageEncoder.CtaButton.call(label, value);
                             default     -> null;
                         });
                     }
@@ -252,12 +264,12 @@ public final class Main {
                     String body = System.getProperty("jawa.buttons_body", "");
                     String footer = System.getProperty("jawa.buttons_footer", "");
                     String spec = System.getProperty("jawa.buttons", "");
-                    java.util.List<id.jawa.message.MessageEncoder.QuickReplyButton> btns = new java.util.ArrayList<>();
+                    java.util.List<id.jawa.feature.messaging.MessageEncoder.QuickReplyButton> btns = new java.util.ArrayList<>();
                     for (String pair : spec.split("\\|")) {
                         if (pair.isBlank()) continue;
                         String[] parts = pair.split(":", 2);
                         if (parts.length != 2) continue;
-                        btns.add(new id.jawa.message.MessageEncoder.QuickReplyButton(parts[0], parts[1]));
+                        btns.add(new id.jawa.feature.messaging.MessageEncoder.QuickReplyButton(parts[0], parts[1]));
                     }
                     client.sendButtonsMessage(buttonsChat, body, footer.isEmpty() ? null : footer, btns)
                         .whenComplete((msgId, err) -> {
@@ -275,20 +287,20 @@ public final class Main {
                     String footer = System.getProperty("jawa.list_footer", "");
                     String buttonText = System.getProperty("jawa.list_button", "Select");
                     String rowsSpec = System.getProperty("jawa.list_rows", "");
-                    java.util.List<id.jawa.message.MessageEncoder.ListSection> sections = new java.util.ArrayList<>();
+                    java.util.List<id.jawa.feature.messaging.MessageEncoder.ListSection> sections = new java.util.ArrayList<>();
                     for (String secSpec : rowsSpec.split(";")) {
                         if (secSpec.isBlank()) continue;
                         String[] hr = secSpec.split(">", 2);
                         String secTitle = hr.length > 1 ? hr[0] : null;
                         String rowsPart = hr.length > 1 ? hr[1] : hr[0];
-                        java.util.List<id.jawa.message.MessageEncoder.ListRow> rows = new java.util.ArrayList<>();
+                        java.util.List<id.jawa.feature.messaging.MessageEncoder.ListRow> rows = new java.util.ArrayList<>();
                         for (String r : rowsPart.split("\\|")) {
                             if (r.isBlank()) continue;
                             String[] kv = r.split("=", 2);
                             if (kv.length != 2) continue;
-                            rows.add(new id.jawa.message.MessageEncoder.ListRow(kv[0], kv[1], null));
+                            rows.add(new id.jawa.feature.messaging.MessageEncoder.ListRow(kv[0], kv[1], null));
                         }
-                        sections.add(new id.jawa.message.MessageEncoder.ListSection(secTitle, rows));
+                        sections.add(new id.jawa.feature.messaging.MessageEncoder.ListSection(secTitle, rows));
                     }
                     client.sendListMessage(listChat, title, body,
                             footer.isEmpty() ? null : footer, buttonText, sections)
@@ -426,7 +438,7 @@ public final class Main {
                     System.out.println(">>> Sent message id=" + msgId + " body=\"" + text + "\"");
                 });
             }
-            @Override public void onMessage(id.jawa.message.MessageReceiver.Decoded d) {
+            @Override public void onMessage(id.jawa.feature.messaging.MessageReceiver.Decoded d) {
                 if (d.text() != null) {
                     System.out.println(">>> MESSAGE from=" + d.senderJid()
                         + " id=" + d.msgId()
@@ -437,7 +449,7 @@ public final class Main {
                         + " (non-text payload encType=" + d.encType() + ")");
                 }
             }
-            @Override public void onStanza(id.jawa.binary.BinaryNode node) {
+            @Override public void onStanza(id.jawa.protocol.codec.BinaryNode node) {
                 System.out.println("RX: " + node.tag() + " " + node.attrs());
             }
             @Override public void onError(Throwable t) {

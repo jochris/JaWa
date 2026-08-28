@@ -43,17 +43,6 @@ messaging, no stalkerware, no spam.
 - **nv-websocket-client** — WebSocket transport
 - **ZXing** — terminal-rendered pairing QR
 
-# Module layout
-
-```
-id.jawa.binary    — WhatsApp binary node encoder/decoder
-id.jawa.noise     — Noise_XX_25519_AESGCM_SHA256 handshake + framed AEAD transport
-id.jawa.signal    — Signal Protocol integration (pre-keys, sessions, sender keys)
-id.jawa.pair      — Multi-device pairing (QR + phone-number code)
-id.jawa.message   — Message stanza send/receive, encoder/decoder, group sender
-id.jawa.media     — Media upload/download (HKDF-AES-CBC + HMAC) — TODO
-id.jawa.appstate  — App-state sync (LT-Hash, mutations) — TODO
-id.jawa.store     — Pluggable session/key persistence
 id.jawa.proto     — Generated protobuf classes
 id.jawa.event     — Event listener API (folded into core.JaWaClient.Listener)
 id.jawa.core      — Client facade + public API

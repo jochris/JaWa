@@ -1,13 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package id.jawa;
 
-import id.jawa.core.ChatPresence;
-import id.jawa.core.JaWaClient;
-import id.jawa.message.MessageEncoder;
-import id.jawa.message.MessageEncoder.CtaButton;
-import id.jawa.message.MessageEncoder.ListSection;
-import id.jawa.message.MessageEncoder.ListRow;
-import id.jawa.store.FileAuthStore;
+import id.jawa.protocol.connection.*;
+import id.jawa.protocol.codec.*;
+import id.jawa.protocol.crypto.*;
+import id.jawa.domain.model.*;
+import id.jawa.domain.store.*;
+import id.jawa.feature.pairing.*;
+import id.jawa.feature.messaging.*;
+import id.jawa.feature.media.*;
+import id.jawa.feature.appstate.*;
+import id.jawa.feature.signal.*;
+
+
+import id.jawa.domain.model.ChatPresence;
+import id.jawa.client.JaWaClient;
+import id.jawa.feature.messaging.MessageEncoder;
+import id.jawa.feature.messaging.MessageEncoder.CtaButton;
+import id.jawa.feature.messaging.MessageEncoder.ListSection;
+import id.jawa.feature.messaging.MessageEncoder.ListRow;
+import id.jawa.domain.store.FileAuthStore;
 
 import java.nio.file.Path;
 import java.util.List;
@@ -58,7 +70,7 @@ public final class SimpleBot {
                 }
                 if (!qrs.isEmpty()) {
                     System.out.println("\n>>> Scan this QR with Linked Devices:\n");
-                    System.out.print(id.jawa.util.QrTerminal.render(qrs.get(0)));
+                    System.out.print(id.jawa.feature.pairing.QrTerminal.render(qrs.get(0)));
                 }
             }
 
@@ -69,7 +81,7 @@ public final class SimpleBot {
             }
 
             @Override
-            public void onMessage(id.jawa.message.MessageReceiver.Decoded d) {
+            public void onMessage(id.jawa.feature.messaging.MessageReceiver.Decoded d) {
                 String chatJid = d.groupJid() != null ? d.groupJid() : d.senderJid();
 
                 // 1. Handle interactive response callback (button or row click)
@@ -97,7 +109,7 @@ public final class SimpleBot {
         client.join();
     }
 
-    private static void handleCommand(JaWaClient client, String chatJid, String cmd, id.jawa.message.MessageReceiver.Decoded d) {
+    private static void handleCommand(JaWaClient client, String chatJid, String cmd, id.jawa.feature.messaging.MessageReceiver.Decoded d) {
         if (cmd.equals(".menu") || cmd.equals("menu") || cmd.equals("menu_cmd")) {
             sendMenu(client, chatJid, d);
         } else if (cmd.equals(".ping") || cmd.equals("ping") || cmd.equals("ping_cmd")) {
@@ -111,7 +123,7 @@ public final class SimpleBot {
         }
     }
 
-    private static void sendMenu(JaWaClient client, String chatJid, id.jawa.message.MessageReceiver.Decoded d) {
+    private static void sendMenu(JaWaClient client, String chatJid, id.jawa.feature.messaging.MessageReceiver.Decoded d) {
         client.sendChatPresence(chatJid, ChatPresence.COMPOSING);
         List<CtaButton> buttons = List.of(
             CtaButton.quickReply("🏓 Ping Bot", "ping_cmd"),
@@ -123,18 +135,18 @@ public final class SimpleBot {
                 ))
             ))
         );
-        var msg = id.jawa.message.MessageEncoder.interactiveCtaButtons(
+        var msg = id.jawa.feature.messaging.MessageEncoder.interactiveCtaButtons(
             "*Hello! Silakan pilih menu di bawah ini:*", "JaWa Bot Menu", buttons
         );
         if (d != null) {
             String quotedSender = d.groupJid() != null ? d.senderJid() : null;
             String quotedText = d.text() != null ? d.text() : "";
-            msg = id.jawa.message.MessageEncoder.quote(msg, d.msgId(), quotedSender, quotedText);
+            msg = id.jawa.feature.messaging.MessageEncoder.quote(msg, d.msgId(), quotedSender, quotedText);
         }
         client.sendMessage(chatJid, msg);
     }
 
-    private static void sendPing(JaWaClient client, String chatJid, id.jawa.message.MessageReceiver.Decoded d) {
+    private static void sendPing(JaWaClient client, String chatJid, id.jawa.feature.messaging.MessageReceiver.Decoded d) {
         client.sendChatPresence(chatJid, ChatPresence.COMPOSING);
         
         long totalMemory = Runtime.getRuntime().totalMemory() / (1024 * 1024);
@@ -161,34 +173,34 @@ public final class SimpleBot {
             freeMemory
         );
 
-        var msg = id.jawa.message.MessageEncoder.text(response);
+        var msg = id.jawa.feature.messaging.MessageEncoder.text(response);
         if (d != null) {
             String quotedSender = d.groupJid() != null ? d.senderJid() : null;
             String quotedText = d.text() != null ? d.text() : "";
-            msg = id.jawa.message.MessageEncoder.quote(msg, d.msgId(), quotedSender, quotedText);
+            msg = id.jawa.feature.messaging.MessageEncoder.quote(msg, d.msgId(), quotedSender, quotedText);
         }
         client.sendMessage(chatJid, msg);
     }
 
-    private static void sendCtaButtons(JaWaClient client, String chatJid, id.jawa.message.MessageReceiver.Decoded d) {
+    private static void sendCtaButtons(JaWaClient client, String chatJid, id.jawa.feature.messaging.MessageReceiver.Decoded d) {
         client.sendChatPresence(chatJid, ChatPresence.COMPOSING);
         List<CtaButton> buttons = List.of(
             CtaButton.url("🌐 Open Repository", "https://github.com/jochris/JaWa"),
             CtaButton.copy("📋 Copy Promo Code", "JAWA-BOT-2026"),
             CtaButton.quickReply("🏓 Ping Bot", "ping_cmd")
         );
-        var msg = id.jawa.message.MessageEncoder.interactiveCtaButtons(
+        var msg = id.jawa.feature.messaging.MessageEncoder.interactiveCtaButtons(
             "*Pilih tombol interaksi di bawah ini:*", "JaWa Interactive CTA", buttons
         );
         if (d != null) {
             String quotedSender = d.groupJid() != null ? d.senderJid() : null;
             String quotedText = d.text() != null ? d.text() : "";
-            msg = id.jawa.message.MessageEncoder.quote(msg, d.msgId(), quotedSender, quotedText);
+            msg = id.jawa.feature.messaging.MessageEncoder.quote(msg, d.msgId(), quotedSender, quotedText);
         }
         client.sendMessage(chatJid, msg);
     }
 
-    private static void sendCarousel(JaWaClient client, String chatJid, id.jawa.message.MessageReceiver.Decoded d) {
+    private static void sendCarousel(JaWaClient client, String chatJid, id.jawa.feature.messaging.MessageReceiver.Decoded d) {
         client.sendChatPresence(chatJid, ChatPresence.COMPOSING);
 
         // Generate dummy red and green images dynamically to satisfy WA's media header requirement
@@ -237,7 +249,7 @@ public final class SimpleBot {
             });
     }
 
-    private static void sendList(JaWaClient client, String chatJid, id.jawa.message.MessageReceiver.Decoded d) {
+    private static void sendList(JaWaClient client, String chatJid, id.jawa.feature.messaging.MessageReceiver.Decoded d) {
         client.sendChatPresence(chatJid, ChatPresence.COMPOSING);
         List<CtaButton> buttons = List.of(
             CtaButton.singleSelect("Buka Dropdown 📋", List.of(
@@ -251,13 +263,13 @@ public final class SimpleBot {
                 ))
             ))
         );
-        var msg = id.jawa.message.MessageEncoder.interactiveCtaButtons(
+        var msg = id.jawa.feature.messaging.MessageEncoder.interactiveCtaButtons(
             "*Pilih salah satu menu dari dropdown:*", "JaWa Dropdown", buttons
         );
         if (d != null) {
             String quotedSender = d.groupJid() != null ? d.senderJid() : null;
             String quotedText = d.text() != null ? d.text() : "";
-            msg = id.jawa.message.MessageEncoder.quote(msg, d.msgId(), quotedSender, quotedText);
+            msg = id.jawa.feature.messaging.MessageEncoder.quote(msg, d.msgId(), quotedSender, quotedText);
         }
         client.sendMessage(chatJid, msg);
     }

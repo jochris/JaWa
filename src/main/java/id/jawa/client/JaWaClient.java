@@ -1,0 +1,2165 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+package id.jawa.client;
+
+import id.jawa.protocol.connection.*;
+import id.jawa.protocol.codec.*;
+import id.jawa.protocol.crypto.*;
+import id.jawa.domain.model.*;
+import id.jawa.domain.store.*;
+import id.jawa.feature.pairing.*;
+import id.jawa.feature.messaging.*;
+import id.jawa.feature.media.*;
+import id.jawa.feature.appstate.*;
+import id.jawa.feature.signal.*;
+
+
+import com.google.protobuf.ByteString;
+import id.jawa.protocol.codec.BinaryDecoder;
+import id.jawa.protocol.codec.BinaryEncoder;
+import id.jawa.protocol.codec.BinaryNode;
+import id.jawa.protocol.connection.FrameSocket;
+import id.jawa.protocol.connection.NoiseHandshake;
+import id.jawa.protocol.connection.NoiseTransport;
+import id.jawa.feature.pairing.ClientPayloadBuilder;
+import id.jawa.feature.pairing.PairingCodeHandler;
+import id.jawa.feature.pairing.PairingHandler;
+import id.jawa.proto.Wa;
+import id.jawa.feature.messaging.MessageEncoder;
+import id.jawa.feature.messaging.MessageSender;
+import id.jawa.domain.store.InMemorySignalKeyStore;
+import id.jawa.feature.signal.JaWaProtocolStore;
+import id.jawa.feature.signal.PreKeyBundleFetcher;
+import id.jawa.feature.signal.PreKeyManager;
+import id.jawa.feature.signal.SessionBootstrap;
+import id.jawa.domain.store.SignalKeyStore;
+import id.jawa.domain.model.AuthCreds;
+import id.jawa.domain.store.AuthStore;
+import id.jawa.protocol.crypto.Bytes;
+import id.jawa.protocol.crypto.Curve25519;
+import id.jawa.protocol.crypto.KeyPair25519;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+/**
+ * Top-level WhatsApp Web client.
+ *
+ * <p>Drives the connection lifecycle:
+ * <ol>
+ *   <li>Load (or generate) {@link AuthCreds}.
+ *   <li>Open the WebSocket via {@link FrameSocket}.
+ *   <li>Run the Noise XX handshake. On {@code clientFinish.payload}, send either
+ *     a {@code RegisterPayload} (first pair) or {@code LoginPayload} (reconnect).
+ *   <li>Enter the steady-state read loop. For first-pair, dispatch
+ *     {@code <pair-device>} / {@code <pair-success>} IQs via {@link PairingHandler}.
+ *   <li>Persist creds after pair-success.
+ * </ol>
+ */
+public final class JaWaClient implements AutoCloseable {
+
+    private static final Logger LOG = LoggerFactory.getLogger(JaWaClient.class);
+
+    public static final java.util.concurrent.ConcurrentHashMap<String, String> LID_TO_PN_MAP =
+        new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** Categorised reason the server tore the session down. */
+    public enum TerminationReason {
+        /** {@code <failure reason="401">} — device record revoked; user unlinked us. */
+        REVOKED,
+        /** Account suspended / banned by WhatsApp. */
+        BANNED,
+        /** Another session for the same device took over ({@code <stream:error><conflict type="replaced"/>}). */
+        REPLACED,
+        /** Client version too old (`<failure reason="405">`); bump {@link WaConstants#WA_VERSION}. */
+        VERSION_OBSOLETE,
+        /** Transient server-side or network hiccup; auto-reconnect should keep trying. */
+        TRANSIENT,
+        /** Server sent a stream error code we don't have a specific bucket for yet. */
+        UNKNOWN
+    }
+
+    public interface Listener {
+        /** Server sent QR refs. Each string is {@code ref,noisePub,identityPub,advSecret} — render as a QR. */
+        default void onQr(List<String> qrStrings) {}
+        /** Pairing completed; creds persisted. */
+        default void onPaired(String jid, String pushName, String platform) {}
+        /** Steady-state connection up. */
+        default void onConnected() {}
+        /**
+         * A {@code <message>} stanza was successfully decrypted.
+         *
+         * @param decoded the decoded payload — {@code text} is non-null for plain
+         *                conversation messages, null for media / reactions / etc.
+         */
+        default void onMessage(id.jawa.feature.messaging.MessageReceiver.Decoded decoded) {}
+        /**
+         * Inbound {@code <receipt>} stanza, already parsed into a {@link id.jawa.domain.model.Receipt}.
+         * Fires before {@link #onStanza}; consumers that care about delivery/read/played
+         * lifecycle should override this instead of pattern-matching the raw stanza.
+         */
+        default void onReceipt(id.jawa.domain.model.Receipt receipt) {}
+
+        /**
+         * Fired once when the primary phone has shared a fresh batch of app-state keys.
+         * After this fires, {@link #requestAppStateSync} can actually decrypt patches.
+         */
+        default void onAppStateKeysReceived(int count) {}
+
+        /**
+         * Fired with every batch of decoded app-state mutations returned by
+         * {@link #requestAppStateSync}. Each {@link id.jawa.feature.appstate.AppStateProcessor.Mutation}
+         * carries a {@link id.jawa.proto.Wa.SyncActionData} whose nested {@code value}
+         * names the actual action (contact / pin / archive / mute / etc.); consumers
+         * project the ones they care about.
+         */
+        default void onAppStateMutations(id.jawa.feature.appstate.PatchName name,
+                                         java.util.List<id.jawa.feature.appstate.AppStateProcessor.Mutation> mutations) {}
+
+        /**
+         * Server has signalled the session can no longer continue (revoked device,
+         * banned account, version obsolete, etc.). Fires once before the underlying
+         * connection is torn down; consumers should clean up any per-session state.
+         *
+         * <p>{@code permanent} differentiates "device record gone, re-pair required"
+         * (true) from "transient kick, auto-reconnect will retry" (false). When
+         * {@code permanent} is true, auto-reconnect is suppressed regardless of the
+         * {@link #autoReconnect} flag.
+         */
+        default void onTerminated(TerminationReason reason, String detail, boolean permanent) {}
+
+        /** Inbound stanza after handshake/pairing. */
+        default void onStanza(BinaryNode node) {}
+        /** Fatal error. */
+        default void onError(Throwable t) {}
+    }
+
+    private final AuthStore store;
+    private SignalKeyStore signalStore = new InMemorySignalKeyStore();
+    private id.jawa.domain.store.InMemorySenderKeyStore senderKeyStore = new id.jawa.domain.store.InMemorySenderKeyStore();
+    private final java.nio.file.Path signalDir; // null = sessions in-memory
+    private id.jawa.domain.store.FileSessionStorage sessionStorage; // built once when connecting if signalDir is set
+    private id.jawa.domain.store.FilePreKeyStorage preKeyStorage;   // ditto
+    private id.jawa.domain.store.FileSenderKeyStorage senderKeyStorage; // ditto
+    private id.jawa.feature.appstate.FileAppStateKeyStorage appStateKeyStorage; // ditto
+    private id.jawa.feature.appstate.AppStateProcessor appStateProcessor;
+    private JaWaProtocolStore protocolStore;  // initialised in connect() once creds are loaded
+    private PairingCodeHandler pairCodeHandler; // populated on demand for pair-code flow
+    private java.util.concurrent.ScheduledExecutorService keepalive;
+    private Listener listener = new Listener() {};
+    private FrameSocket frame;
+    private NoiseHandshake noise;
+    private NoiseTransport transport;
+    private AuthCreds creds;
+    private Thread readerThread;
+    private final AtomicBoolean closing = new AtomicBoolean(false);
+    /** Set by the pair-success handler so the reader exits cleanly into a login-mode reconnect. */
+    private final AtomicBoolean reconnectAfterPair = new AtomicBoolean(false);
+    /** Set when the server tells us our creds are revoked or otherwise non-recoverable. */
+    private final AtomicBoolean terminated = new AtomicBoolean(false);
+    private final java.util.concurrent.atomic.AtomicInteger reconnectAttempts =
+        new java.util.concurrent.atomic.AtomicInteger(0);
+    private boolean autoReconnect = true;
+    private static final long[] RECONNECT_BACKOFF_MS = {2_000, 4_000, 8_000, 16_000, 30_000, 60_000};
+    /** Counts down exactly once when {@link #close()} fires; lets {@link #join()} block across reconnects. */
+    private final java.util.concurrent.CountDownLatch closeLatch = new java.util.concurrent.CountDownLatch(1);
+    private static final int PRE_KEY_UPLOAD_COUNT = 30;
+
+    public JaWaClient(AuthStore store) {
+        this(store, null);
+    }
+
+    /**
+     * @param store     the auth store backing {@link AuthCreds} persistence
+     * @param signalDir optional directory for persistent Signal session state. When
+     *                  {@code null}, sessions live only in memory (lost on restart);
+     *                  when set, the file-backed store under this directory survives
+     *                  reconnects, eliminating retry-receipt churn for previously-paired
+     *                  peers.
+     */
+    public JaWaClient(AuthStore store, java.nio.file.Path signalDir) {
+        this.store = store;
+        this.signalDir = signalDir;
+    }
+
+    public JaWaClient listener(Listener l) { this.listener = l != null ? l : new Listener() {}; return this; }
+
+    /**
+     * Toggle automatic reconnect on unexpected disconnect (default {@code true}).
+     * Disable for short-lived demos / tests where you want the process to exit when
+     * the server closes the socket. Terminal failures (revoked creds, account
+     * banned) never auto-reconnect regardless of this flag.
+     */
+    public JaWaClient autoReconnect(boolean enabled) {
+        this.autoReconnect = enabled;
+        return this;
+    }
+
+    /** Open the WebSocket, run the handshake, and start dispatching stanzas. Blocks until handshake completes. */
+    public synchronized void connect() throws Exception {
+        if (frame != null) throw new IllegalStateException("already connected");
+
+        creds = store.load();
+        boolean isPairing = (creds == null || creds.account == null);
+        if (creds == null) {
+            creds = AuthCreds.generate();
+            LOG.info("No creds found — generated fresh pair: regId={}", creds.registrationId);
+        } else if (isPairing) {
+            LOG.info("Found unpaired creds (regId={}) — resuming QR pairing", creds.registrationId);
+        } else {
+            LOG.info("Found paired creds — login mode (jid={})", creds.meJid);
+        }
+
+        frame = new FrameSocket(null);
+        frame.connect();
+
+        // ---- Noise XX, client side ----
+
+        KeyPair25519 ephemeral = Curve25519.generateKeyPair();
+        noise = new NoiseHandshake(ephemeral, WaConstants.WA_HEADER);
+
+        // Message 1: ClientHello
+        Wa.HandshakeMessage clientHello = Wa.HandshakeMessage.newBuilder()
+                .setClientHello(Wa.HandshakeMessage.ClientHello.newBuilder()
+                        .setEphemeral(ByteString.copyFrom(ephemeral.publicKey()))
+                        .build())
+                .build();
+        frame.send(clientHello.toByteArray());
+
+        // Message 2: ServerHello
+        byte[] serverHelloBytes = frame.receive(15_000);
+        if (serverHelloBytes == null) throw new IllegalStateException("ServerHello timeout");
+        Wa.HandshakeMessage serverFrame = Wa.HandshakeMessage.parseFrom(serverHelloBytes);
+        Wa.HandshakeMessage.ServerHello serverHello = serverFrame.getServerHello();
+
+        byte[] encStatic = noise.processServerHello(
+            serverHello.getEphemeral().toByteArray(),
+            serverHello.getStatic().toByteArray(),
+            serverHello.getPayload().toByteArray(),
+            creds.noiseKey
+        );
+
+        // Message 3: ClientFinish — encrypt ClientPayload with the NEW handshake key
+        Wa.ClientPayload payload = isPairing
+                ? ClientPayloadBuilder.register(creds)
+                : ClientPayloadBuilder.login(creds);
+        byte[] encPayload = noise.encrypt(payload.toByteArray());
+
+        Wa.HandshakeMessage clientFinish = Wa.HandshakeMessage.newBuilder()
+                .setClientFinish(Wa.HandshakeMessage.ClientFinish.newBuilder()
+                        .setStatic(ByteString.copyFrom(encStatic))
+                        .setPayload(ByteString.copyFrom(encPayload))
+                        .build())
+                .build();
+        frame.send(clientFinish.toByteArray());
+
+        transport = noise.finish();
+        if (signalDir != null && sessionStorage == null) {
+            sessionStorage     = new id.jawa.domain.store.FileSessionStorage(signalDir.resolve("sessions"));
+            preKeyStorage      = new id.jawa.domain.store.FilePreKeyStorage(signalDir.resolve("prekeys"));
+            senderKeyStorage   = new id.jawa.domain.store.FileSenderKeyStorage(signalDir.resolve("sender-keys"));
+            appStateKeyStorage = new id.jawa.feature.appstate.FileAppStateKeyStorage(signalDir.resolve("appstate-keys"));
+            signalStore        = new InMemorySignalKeyStore(preKeyStorage);
+            senderKeyStore     = new id.jawa.domain.store.InMemorySenderKeyStore(senderKeyStorage);
+            appStateProcessor  = new id.jawa.feature.appstate.AppStateProcessor(appStateKeyStorage);
+        }
+        protocolStore = new JaWaProtocolStore(creds, sessionStorage);
+        // Re-mirror any persisted pre-keys into libsignal's protocolStore so inbound
+        // <enc type=pkmsg> referencing a previously-uploaded one-time pre-key id can
+        // still resolve after restart.
+        if (preKeyStorage != null) {
+            // Prune accumulated pre-keys before re-mirroring. Each successful login uploads
+            // PRE_KEY_UPLOAD_COUNT fresh keys (default 30) and the storage never clears the
+            // old ones on its own — after a few hundred connects the disk + libsignal mirror
+            // both balloon (we hit 7640+ keys mid-development, which delayed startup enough
+            // for the server to time out the handshake). Cap to 600 = ~20 sessions worth.
+            preKeyStorage.pruneKeepHighest(600);
+            for (var entry : preKeyStorage.snapshot().entrySet()) {
+                try {
+                    byte[] prefixedPub = Curve25519.prependType(entry.getValue().publicKey());
+                    org.whispersystems.libsignal.ecc.ECKeyPair kp =
+                        new org.whispersystems.libsignal.ecc.ECKeyPair(
+                            org.whispersystems.libsignal.ecc.Curve.decodePoint(prefixedPub, 0),
+                            org.whispersystems.libsignal.ecc.Curve.decodePrivatePoint(entry.getValue().privateKey()));
+                    protocolStore.storePreKey(entry.getKey(),
+                        new org.whispersystems.libsignal.state.PreKeyRecord(entry.getKey(), kp));
+                } catch (org.whispersystems.libsignal.InvalidKeyException e) {
+                    LOG.warn("Failed to re-mirror persisted pre-key {} into protocolStore", entry.getKey(), e);
+                }
+            }
+            LOG.info("Re-mirrored {} persisted pre-key(s) into protocolStore", preKeyStorage.size());
+        }
+        LOG.info("Noise handshake complete — steady state {}", isPairing ? "(pairing)" : "(login)");
+
+        // ---- Start reader loop ----
+
+        readerThread = Thread.ofVirtual().name("jawa-reader").start(this::readLoop);
+        startKeepalive();
+    }
+
+    /** Schedule a periodic w:p keepalive ping so the server doesn't disconnect us for inactivity. */
+    private void startKeepalive() {
+        if (keepalive != null) return;
+        keepalive = java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = Thread.ofVirtual().name("jawa-keepalive").unstarted(r);
+            t.setDaemon(true);
+            return t;
+        });
+        // Whatsmeow rolls a random interval per tick in [20..30) sec. We do the same to avoid
+        // any deterministic-traffic heuristic on the server side.
+        Runnable tick = new Runnable() {
+            @Override public void run() {
+                if (closing.get() || frame == null || !frame.isOpen()) return;
+                try {
+                    String iqId = newIqId();
+                    BinaryNode ping = new BinaryNode("iq",
+                        java.util.Map.of(
+                            "to",    id.jawa.domain.model.Jid.SERVER_WHATSAPP,
+                            "type",  "get",
+                            "xmlns", "w:p",
+                            "id",    iqId
+                        ),
+                        java.util.List.of(new BinaryNode("ping", java.util.Map.of(), null)));
+                    sendIq(ping, resp -> LOG.trace("keepalive ack id={}", iqId));
+                } catch (Throwable t) {
+                    LOG.warn("Keepalive send failed", t);
+                }
+                // Random in [20..30) seconds — matches whatsmeow's KeepAliveIntervalMin/Max.
+                long delay = 20 + java.util.concurrent.ThreadLocalRandom.current().nextInt(10);
+                keepalive.schedule(this, delay, java.util.concurrent.TimeUnit.SECONDS);
+            }
+        };
+        keepalive.schedule(tick, 20, java.util.concurrent.TimeUnit.SECONDS);
+    }
+
+    /**
+     * Block until {@link #close()} fires. Survives reconnects — the underlying reader
+     * thread may be swapped out mid-flight (e.g. post-pair auto-login) without unblocking
+     * the caller.
+     */
+    public void join() throws InterruptedException {
+        closeLatch.await();
+    }
+
+    private void readLoop() {
+        PairingHandler pair = new PairingHandler(creds);
+        try {
+            while (!closing.get() && frame.isOpen()) {
+                byte[] enc = frame.receive(60_000);
+                if (enc == null) {
+                    if (!frame.isOpen()) break;
+                    continue;
+                }
+                byte[] plain = transport.decrypt(enc);
+                BinaryNode node = BinaryDecoder.decode(plain);
+                LOG.trace("recv: {}", node);
+
+                try {
+                    if (handleStanza(node, pair)) continue;
+                    listener.onStanza(node);
+                } catch (Throwable per) {
+                    LOG.warn("Error handling stanza {} — continuing", node.tag(), per);
+                }
+            }
+        } catch (Throwable t) {
+            if (!closing.get() && !reconnectAfterPair.get() && !terminated.get()) {
+                listener.onError(t);
+            }
+        } finally {
+            if (reconnectAfterPair.compareAndSet(true, false)) {
+                Thread.ofVirtual().name("jawa-reconnect").start(this::doReconnectPostPair);
+            } else if (!closing.get() && !terminated.get() && autoReconnect && creds != null && creds.account != null) {
+                Thread.ofVirtual().name("jawa-autoreconnect").start(this::doAutoReconnect);
+            } else {
+                close();
+            }
+        }
+    }
+
+    /**
+     * Tear down the dead WebSocket, sleep an exponentially-growing back-off, then
+     * call {@link #connect()} again. Same creds, same listener, same persistent Signal
+     * state — peers shouldn't notice the gap.
+     */
+    /**
+     * Watch every decoded inbound message for a {@code protocolMessage.appStateSyncKeyShare}
+     * — the primary phone ships these once when our companion device first comes online,
+     * and they're not re-sent on demand. Persisting them as soon as they arrive is how
+     * we participate in app-state sync at all.
+     */
+    private void captureAppStateKeysFrom(id.jawa.feature.messaging.MessageReceiver.Decoded decoded) {
+        if (appStateKeyStorage == null || decoded.message() == null) return;
+        if (!decoded.message().hasProtocolMessage()) return;
+        var pm = decoded.message().getProtocolMessage();
+        if (!pm.hasAppStateSyncKeyShare()) return;
+        int count = 0;
+        for (id.jawa.proto.Wa.Message.AppStateSyncKey k : pm.getAppStateSyncKeyShare().getKeysList()) {
+            byte[] id = k.getKeyId().getKeyId().toByteArray();
+            byte[] data = k.getKeyData().getKeyData().toByteArray();
+            if (data.length != 32) continue;
+            appStateKeyStorage.put(new id.jawa.feature.appstate.AppStateKey(id, data));
+            count++;
+        }
+        if (count > 0) {
+            LOG.info("Persisted {} app-state key(s) shared by {}", count, decoded.senderJid());
+            try { listener.onAppStateKeysReceived(count); }
+            catch (Throwable t) { LOG.warn("listener.onAppStateKeysReceived threw", t); }
+        }
+    }
+
+    /**
+     * Request a snapshot or incremental patch list from {@code w:sync:app:state} and
+     * decode every mutation in the response via {@link id.jawa.feature.appstate.AppStateProcessor}.
+     *
+     * @param name        which collection to sync ({@code regular_low} = chat
+     *                    archive state, {@code critical_unblock_low} = contacts, etc.)
+     * @param fromVersion {@code -1} for a fresh snapshot (typical first sync);
+     *                    otherwise an existing version to fetch patches since
+     * @return future resolving to every decoded mutation; empty list when nothing
+     *         to apply or when the IQ failed (logged)
+     */
+    public java.util.concurrent.CompletableFuture<java.util.List<id.jawa.feature.appstate.AppStateProcessor.Mutation>>
+            requestAppStateSync(id.jawa.feature.appstate.PatchName name, long fromVersion) {
+        if (appStateProcessor == null) {
+            return java.util.concurrent.CompletableFuture.failedFuture(
+                new IllegalStateException("signalDir not set — app-state sync requires persistent storage"));
+        }
+        String iqId = newIqId();
+        BinaryNode iq = fromVersion < 0
+            ? id.jawa.feature.appstate.AppStateSyncQuery.buildSnapshotRequest(iqId, name)
+            : id.jawa.feature.appstate.AppStateSyncQuery.buildPatchRequest(iqId, name, fromVersion);
+        LOG.debug("Sent app-state sync IQ id={} name={} from={}", iqId, name.wire, fromVersion);
+        return sendIqAsync(iq).thenApply(resp -> {
+            if ("error".equals(resp.attr("type"))) {
+                LOG.warn("App-state sync rejected: {}", resp);
+                return java.util.List.<id.jawa.feature.appstate.AppStateProcessor.Mutation>of();
+            }
+            id.jawa.feature.appstate.AppStateSyncQuery.PatchList list =
+                id.jawa.feature.appstate.AppStateSyncQuery.parseResponse(resp);
+            if (list == null) return java.util.List.<id.jawa.feature.appstate.AppStateProcessor.Mutation>of();
+
+            java.util.List<id.jawa.feature.appstate.AppStateProcessor.Mutation> all = new java.util.ArrayList<>();
+            if (list.snapshot() != null) {
+                all.addAll(appStateProcessor.decodeSnapshot(list.snapshot(), false));
+            }
+            for (id.jawa.proto.Wa.SyncdPatch p : list.patches()) {
+                all.addAll(appStateProcessor.decodePatch(p, false));
+            }
+            LOG.info("App-state sync {}: {} snapshot record(s) + {} patch(es) -> {} mutation(s) decoded",
+                name.wire,
+                list.snapshot() == null ? 0 : list.snapshot().getRecordsCount(),
+                list.patches().size(),
+                all.size());
+            if (!all.isEmpty()) {
+                try { listener.onAppStateMutations(name, all); }
+                catch (Throwable t) { LOG.warn("listener.onAppStateMutations threw", t); }
+            }
+            return all;
+        });
+    }
+
+    private void handleFailure(BinaryNode node) {
+        String reason = node.attr("reason", "");
+        String location = node.attr("location", "");
+        TerminationReason cat;
+        boolean permanent;
+        switch (reason) {
+            case "401" -> { cat = TerminationReason.REVOKED;          permanent = true;  }
+            case "405" -> { cat = TerminationReason.VERSION_OBSOLETE; permanent = true;  }
+            case "403", "co_block", "banned" -> {
+                                cat = TerminationReason.BANNED;        permanent = true;  }
+            case "500", "503", "504" -> {
+                                cat = TerminationReason.TRANSIENT;     permanent = false; }
+            default     -> { cat = TerminationReason.UNKNOWN;          permanent = true;  }
+        }
+        LOG.warn("Server <failure> reason={} location={} -> {} (permanent={})",
+            reason, location, cat, permanent);
+        if (permanent) terminated.set(true);
+        String detail = "reason=" + reason + (location.isEmpty() ? "" : " location=" + location);
+        try { listener.onTerminated(cat, detail, permanent); }
+        catch (Throwable t) { LOG.warn("listener.onTerminated threw", t); }
+        try { listener.onError(new IllegalStateException("server rejected session: " + detail)); }
+        catch (Throwable t) { LOG.warn("listener.onError threw", t); }
+    }
+
+    private void handleStreamError(BinaryNode node) {
+        BinaryNode conflict = node.child("conflict");
+        if (conflict != null) {
+            String type = conflict.attr("type", "");
+            LOG.warn("Stream error: conflict type={} — another session for this device is active", type);
+            // <conflict type=replaced/> means another session took over. Don't auto-reconnect
+            // immediately; the user/operator may have started a second JaWa intentionally.
+            terminated.set(true);
+            try { listener.onTerminated(TerminationReason.REPLACED, "conflict type=" + type, true); }
+            catch (Throwable t) { LOG.warn("listener.onTerminated threw", t); }
+            return;
+        }
+        LOG.warn("Stream error: {} (treating as transient)", node);
+        try { listener.onTerminated(TerminationReason.TRANSIENT, "stream:error " + node, false); }
+        catch (Throwable t) { LOG.warn("listener.onTerminated threw", t); }
+    }
+
+    private void doAutoReconnect() {
+        int attempt = reconnectAttempts.incrementAndGet();
+        long sleepMs = RECONNECT_BACKOFF_MS[Math.min(attempt - 1, RECONNECT_BACKOFF_MS.length - 1)];
+        LOG.info("Auto-reconnect attempt {} in {}ms", attempt, sleepMs);
+        synchronized (this) {
+            if (frame != null) { try { frame.close(); } catch (Throwable ignored) {} frame = null; }
+            if (keepalive != null) { keepalive.shutdownNow(); keepalive = null; }
+            noise = null;
+            transport = null;
+            pendingIqResults.clear();
+        }
+        try { Thread.sleep(sleepMs); }
+        catch (InterruptedException ie) { Thread.currentThread().interrupt(); return; }
+        if (closing.get() || terminated.get()) return;
+        try {
+            connect();
+            LOG.info("Auto-reconnect succeeded on attempt {}", attempt);
+        } catch (Exception e) {
+            LOG.warn("Auto-reconnect attempt {} failed: {}", attempt, e.toString());
+            if (!closing.get() && !terminated.get() && autoReconnect) {
+                Thread.ofVirtual().name("jawa-autoreconnect").start(this::doAutoReconnect);
+            } else {
+                listener.onError(e);
+                close();
+            }
+        }
+    }
+
+    /**
+     * Tear down the current pairing connection and reopen as login mode. Called from a
+     * fresh virtual thread after pair-success — the server immediately follows pair-success
+     * with {@code stream:error 515} and a TCP close, and revokes the new creds within ~30s
+     * if we don't reconnect with a {@code LoginPayload}.
+     */
+    private void doReconnectPostPair() {
+        if (frame != null) { try { frame.close(); } catch (Throwable ignored) {} frame = null; }
+        if (keepalive != null) { keepalive.shutdownNow(); keepalive = null; }
+        noise = null;
+        transport = null;
+        pendingIqResults.clear();
+        // Brief settle so we don't race the server's own teardown of the pairing connection.
+        try { Thread.sleep(500); }
+        catch (InterruptedException ie) { Thread.currentThread().interrupt(); return; }
+        if (closing.get()) return; // caller invoked close() during the settle window
+        try {
+            connect();
+            LOG.info("Auto-reconnected post-pair → login mode");
+        } catch (Exception e) {
+            LOG.error("Auto-reconnect failed", e);
+            listener.onError(e);
+            close();
+        }
+    }
+
+    private final java.util.Map<String, java.util.function.Consumer<BinaryNode>> pendingIqResults
+        = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** Random 16-char hex id for outgoing IQ stanzas. */
+    private String newIqId() {
+        return Bytes.toHex(Bytes.random(8));
+    }
+
+    /**
+     * Send an IQ stanza and register a callback for the {@code <iq type=result|error>} response.
+     * The callback runs on the reader thread.
+     */
+    public String sendIq(BinaryNode iq, java.util.function.Consumer<BinaryNode> onResponse) {
+        String id = iq.attr("id");
+        if (id == null) throw new IllegalArgumentException("iq has no id attribute");
+        if (onResponse != null) pendingIqResults.put(id, onResponse);
+        send(iq);
+        return id;
+    }
+
+    /** Send an IQ stanza and return a future that completes with the response. */
+    public java.util.concurrent.CompletableFuture<BinaryNode> sendIqAsync(BinaryNode iq) {
+        var f = new java.util.concurrent.CompletableFuture<BinaryNode>();
+        sendIq(iq, f::complete);
+        return f;
+    }
+
+    /**
+     * Switch the current pairing session to phone-number pairing-code mode.
+     *
+     * @param phoneNumber  the phone number to pair, in international E.164 form without {@code +} (e.g. "628123…")
+     * @param customCode   optional fixed 8-char Crockford code; {@code null} = randomly generated
+     * @return future completing with the 8-char code that should be displayed to the user
+     */
+    public java.util.concurrent.CompletableFuture<String> requestPairingCode(String phoneNumber, String customCode) {
+        if (creds.account != null) {
+            throw new IllegalStateException("already paired (creds.account is set) — cannot request a pairing code");
+        }
+        pairCodeHandler = new PairingCodeHandler(creds);
+        String iqId = newIqId();
+        BinaryNode iq = pairCodeHandler.buildCompanionHello(iqId, phoneNumber, customCode);
+        try { store.save(creds); } catch (Exception e) { LOG.warn("save creds failed", e); }
+        return sendIqAsync(iq).thenApply(resp -> {
+            if ("error".equals(resp.attr("type"))) {
+                throw new IllegalStateException("companion_hello rejected: " + resp);
+            }
+            return pairCodeHandler.pairingCode();
+        });
+    }
+
+    /**
+     * Send a text message to {@code toUser} (bare JID, e.g. {@code 628xxx@s.whatsapp.net}).
+     * Returns the message id once the stanza has been transmitted.
+     *
+     * <p>Pipeline: query devices for recipient AND own user → bootstrap sessions for both
+     * sets → encrypt per-device (DSM-wrap for own companions, bare for foreign) → send.
+     *
+     * <p>The own-user USync is what lets the user's other devices (notably the phone)
+     * insert the outgoing message into their local chat history. Without it, the message
+     * reaches the recipient but the sender's own phone shows no record of it.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendMessage(String chatJid, id.jawa.proto.Wa.Message msg) {
+        if (chatJid.endsWith("@newsletter")) {
+            return sendNewsletterMessage(chatJid, msg);
+        }
+        return chatJid.endsWith("@g.us")
+            ? sendGroupMessage(chatJid, msg)
+            : sendDmMessage(chatJid, msg);
+    }
+
+    /**
+     * Send any {@link id.jawa.proto.Wa.Message} to the chat of the received message.
+     * Routes automatically depending on the JID suffix.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendMessage(
+            id.jawa.feature.messaging.MessageReceiver.Decoded target, id.jawa.proto.Wa.Message msg) {
+        String chatJid = target.groupJid() != null ? target.groupJid() : target.senderJid();
+        if (!chatJid.endsWith("@g.us")) {
+            id.jawa.domain.model.Jid j = id.jawa.domain.model.Jid.parse(chatJid);
+            if (j != null) {
+                chatJid = j.user() + "@" + j.server();
+            }
+        }
+        return sendMessage(chatJid, msg);
+    }
+
+    /**
+     * Send a plain text message to a user or a group.
+     * Routes automatically depending on the JID suffix.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendText(String chatJid, String text) {
+        return sendMessage(chatJid, MessageEncoder.text(text));
+    }
+
+    /**
+     * Send a plain text message replying/sending to the chat of the received message.
+     * Routes automatically depending on the JID suffix.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendText(
+            id.jawa.feature.messaging.MessageReceiver.Decoded target, String text) {
+        return sendMessage(target, MessageEncoder.text(text));
+    }
+
+
+
+    /**
+     * Send a text that tags one or more users. The {@code text} must contain
+     * {@code @<number>} for each mention; {@code mentionedBareJids} lists the matching
+     * full bare JIDs. Routes DM vs group based on {@code chatJid} suffix.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendTextWithMentions(
+            String chatJid, String text, java.util.List<String> mentionedBareJids) {
+        id.jawa.proto.Wa.Message msg = MessageEncoder.textWithMentions(text, mentionedBareJids);
+        return chatJid.endsWith("@g.us")
+            ? sendGroupMessage(chatJid, msg)
+            : sendDmMessage(chatJid, msg);
+    }
+
+    /**
+     * Send a poll. {@code selectableCount=1} produces a single-select poll;
+     * higher values produce multi-select; {@code 0} = unlimited.
+     *
+     * @param chatJid          DM bare JID or group {@code @g.us}
+     * @param name             the poll question
+     * @param options          1-12 option texts
+     * @param selectableCount  how many options each voter can pick
+     */
+    public java.util.concurrent.CompletableFuture<String> sendPoll(
+            String chatJid, String name, java.util.List<String> options, int selectableCount) {
+        id.jawa.proto.Wa.Message msg = MessageEncoder.pollMessage(name, options, selectableCount);
+        return chatJid.endsWith("@g.us")
+            ? sendGroupMessage(chatJid, msg)
+            : sendDmMessage(chatJid, msg);
+    }
+
+    /**
+     * Send a static location pin. {@code name} / {@code address} render as a caption
+     * below the pin; pass {@code null} or empty to skip.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendLocation(
+            String chatJid, double latitude, double longitude, String name, String address) {
+        id.jawa.proto.Wa.Message msg = MessageEncoder.locationMessage(latitude, longitude, name, address);
+        return chatJid.endsWith("@g.us")
+            ? sendGroupMessage(chatJid, msg)
+            : sendDmMessage(chatJid, msg);
+    }
+
+    /**
+     * Send a contact card. Caller supplies a valid vCard string; see
+     * {@link MessageEncoder#contactMessage} for the minimal shape.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendContact(
+            String chatJid, String displayName, String vcard) {
+        id.jawa.proto.Wa.Message msg = MessageEncoder.contactMessage(displayName, vcard);
+        return chatJid.endsWith("@g.us")
+            ? sendGroupMessage(chatJid, msg)
+            : sendDmMessage(chatJid, msg);
+    }
+
+    /**
+     * Send any {@link id.jawa.proto.Wa.Message} (text, reaction, etc.) as a DM. Handles
+     * USync device-list query, pre-key bundle fetch, Signal session install, per-device
+     * encrypt + DSM fan-out to own companion devices.
+     */
+    public java.util.concurrent.CompletableFuture<String>
+            sendDmMessage(String toUser, id.jawa.proto.Wa.Message msg) {
+        String ownBareJid;
+        if (toUser != null && toUser.endsWith("@lid") && creds.meLid != null && !creds.meLid.isBlank()) {
+            id.jawa.domain.model.Jid lidJid = id.jawa.domain.model.Jid.parse(creds.meLid);
+            ownBareJid = lidJid != null ? lidJid.user() + "@lid" : creds.meLid;
+        } else {
+            id.jawa.domain.model.Jid myJid = id.jawa.domain.model.Jid.parse(creds.meJid);
+            if (myJid == null) {
+                return java.util.concurrent.CompletableFuture.failedFuture(
+                    new IllegalStateException("creds.meJid invalid"));
+            }
+            ownBareJid = myJid.user() + "@" + id.jawa.domain.model.Jid.SERVER_WHATSAPP;
+        }
+        boolean isSelfSend = toUser != null && toUser.equals(ownBareJid);
+        java.util.List<String> queryTargets = isSelfSend
+            ? java.util.List.of(toUser)
+            : java.util.List.of(toUser, ownBareJid);
+
+        id.jawa.domain.model.Jid ownJidObj = id.jawa.domain.model.Jid.parse(ownBareJid);
+        String ownUser = ownJidObj != null ? ownJidObj.user() : "";
+        id.jawa.domain.model.Jid targetJidObj = id.jawa.domain.model.Jid.parse(toUser);
+
+        return queryDevices(queryTargets).thenCompose(devicesMap -> {
+            String resolvedRoutingJid = toUser;
+            String resolvedEncryptionLid = null;
+            if (toUser != null && toUser.endsWith("@lid")) {
+                String mappedPn = LID_TO_PN_MAP.get(toUser);
+                if (mappedPn != null && !mappedPn.isEmpty()) {
+                    LOG.debug("DM dual-identity resolved: route via PN {} but encrypt via LID {}", mappedPn, toUser);
+                    resolvedRoutingJid = mappedPn;
+                    resolvedEncryptionLid = toUser;
+                }
+            }
+            final String finalRoutingJid = resolvedRoutingJid;
+            final String finalEncryptionLid = resolvedEncryptionLid;
+
+            id.jawa.domain.model.Jid pnBase = id.jawa.domain.model.Jid.parse(finalRoutingJid);
+            id.jawa.domain.model.Jid lidBase = finalEncryptionLid != null ? id.jawa.domain.model.Jid.parse(finalEncryptionLid) : null;
+
+            java.util.List<String> allDeviceJids = new java.util.ArrayList<>();
+            java.util.List<String> encryptionDeviceJids = new java.util.ArrayList<>();
+
+            for (var entry : devicesMap.entrySet()) {
+                id.jawa.domain.model.Jid base = id.jawa.domain.model.Jid.parse(entry.getKey());
+                if (base == null) continue;
+                boolean isTarget = targetJidObj != null && base.user().equals(targetJidObj.user());
+
+                for (var d : entry.getValue()) {
+                    if (isTarget && finalEncryptionLid != null && pnBase != null && lidBase != null) {
+                        String wireJid = pnBase.user() + (d.id() != 0 ? ":" + d.id() : "") + "@" + pnBase.server();
+                        String encJid = lidBase.user() + (d.id() != 0 ? ":" + d.id() : "") + "@" + lidBase.server();
+                        allDeviceJids.add(wireJid);
+                        encryptionDeviceJids.add(encJid);
+                    } else {
+                        String jidStr = d.asJid(base.user(), base.server()).asString();
+                        allDeviceJids.add(jidStr);
+                        encryptionDeviceJids.add(jidStr);
+                    }
+                }
+            }
+
+            return fetchBundlesAndInstallSessions(encryptionDeviceJids).thenApply(addresses -> {
+                String msgId = newIqId().toUpperCase();
+                MessageSender.Result result = MessageSender.buildDualIdentityStanza(
+                    protocolStore, creds, msgId, finalRoutingJid,
+                    allDeviceJids, encryptionDeviceJids, msg);
+                send(result.stanza());
+                int ownCount = countOwnDevices(allDeviceJids, ownUser);
+                LOG.info("Sent message id={} to={} ({} device(s) total, {} own-companion DSM)",
+                    msgId, finalRoutingJid, allDeviceJids.size(),
+                    Math.max(0, ownCount - 1));
+                return msgId;
+            });
+        });
+    }
+
+    private static int countOwnDevices(java.util.List<String> deviceJids, String ownUser) {
+        int n = 0;
+        for (String dj : deviceJids) {
+            id.jawa.domain.model.Jid j = id.jawa.domain.model.Jid.parse(dj);
+            if (j != null && ownUser.equals(j.user())) n++;
+        }
+        return n;
+    }
+
+    /** Fetch pre-key bundles for the given per-device JIDs and install Signal sessions for each. */
+    public java.util.concurrent.CompletableFuture<java.util.List<org.whispersystems.libsignal.SignalProtocolAddress>>
+            fetchBundlesAndInstallSessions(java.util.List<String> deviceJids) {
+        String iqId = newIqId();
+        BinaryNode q = PreKeyBundleFetcher.buildFetchStanza(iqId, deviceJids);
+        LOG.debug("Sent pre-key fetch IQ id={} for {} devices", iqId, deviceJids.size());
+        return sendIqAsync(q).thenApply(resp -> {
+            if ("error".equals(resp.attr("type"))) {
+                LOG.warn("Pre-key fetch error: {}", resp);
+                return java.util.List.of();
+            }
+            var bundles = PreKeyBundleFetcher.parseResponse(resp);
+            LOG.debug("Parsed {} bundles", bundles.size());
+            return SessionBootstrap.installAll(protocolStore, bundles);
+        });
+    }
+
+    /**
+     * Send a text message to a group. Pipeline:
+     * 1. Resolve participants by looking up the group in our joined-groups list.
+     * 2. USync each participant's bare JID to enumerate every device they have.
+     * 3. Bootstrap libsignal sessions for every participant device that doesn't have one.
+     * 4. Hand off to {@link id.jawa.feature.messaging.GroupSender} which builds + encrypts the stanza.
+     */
+    public java.util.concurrent.CompletableFuture<String>
+            sendGroupText(String groupJid, String text) {
+        return sendGroupMessage(groupJid, MessageEncoder.text(text));
+    }
+
+    /**
+     * Send any {@link id.jawa.proto.Wa.Message} (text, reaction, etc.) to a group.
+     * Handles participant resolution, USync, pre-key bundle fetch, session install,
+     * and the SKDM-per-participant + single skmsg fan-out.
+     */
+    public java.util.concurrent.CompletableFuture<String>
+            sendGroupMessage(String groupJid, id.jawa.proto.Wa.Message msg) {
+        return queryJoinedGroups().thenCompose(groups -> {
+            id.jawa.feature.messaging.GroupListQuery.GroupInfo target = null;
+            for (var g : groups) {
+                if (g.jid().equals(groupJid)) { target = g; break; }
+            }
+            if (target == null) {
+                return java.util.concurrent.CompletableFuture.failedFuture(
+                    new IllegalStateException("not a member of group: " + groupJid));
+            }
+            // Group-list participant JIDs may be device-suffixed; strip to bare for USync.
+            java.util.LinkedHashSet<String> bareUsers = new java.util.LinkedHashSet<>();
+            for (String pj : target.participantJids()) {
+                id.jawa.domain.model.Jid j = id.jawa.domain.model.Jid.parse(pj);
+                if (j == null) continue;
+                bareUsers.add(j.user() + "@" + j.server());
+            }
+            if (bareUsers.isEmpty()) {
+                return java.util.concurrent.CompletableFuture.failedFuture(
+                    new IllegalStateException("group has no participants"));
+            }
+            return queryDevices(bareUsers).thenCompose(devicesMap -> {
+                java.util.List<String> allDeviceJids = new java.util.ArrayList<>();
+                for (var entry : devicesMap.entrySet()) {
+                    id.jawa.domain.model.Jid base = id.jawa.domain.model.Jid.parse(entry.getKey());
+                    if (base == null) continue;
+                    for (var d : entry.getValue()) {
+                        allDeviceJids.add(d.asJid(base.user(), base.server()).asString());
+                    }
+                }
+                return fetchBundlesAndInstallSessions(allDeviceJids).thenApply(addresses -> {
+                    String msgId = newIqId().toUpperCase();
+                    id.jawa.feature.messaging.GroupSender.Result result =
+                        id.jawa.feature.messaging.GroupSender.buildStanza(
+                            protocolStore, senderKeyStore, creds, msgId,
+                            groupJid, allDeviceJids, msg);
+                    send(result.stanza());
+                    LOG.info("Sent group message id={} to={} ({} participant device(s), SKDM to {})",
+                        msgId, groupJid, allDeviceJids.size(), result.skdmRecipients());
+                    return msgId;
+                });
+            });
+        });
+    }
+
+    /**
+     * Send a message to a newsletter (channel).
+     * Newsletters are sent in plaintext (no E2EE) using a `<plaintext>` node.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendNewsletterMessage(
+            String newsletterJid, id.jawa.proto.Wa.Message msg) {
+        String msgId = newIqId().toUpperCase();
+
+        String msgType = "text";
+        if (msg.hasImageMessage()) msgType = "image";
+        else if (msg.hasVideoMessage()) msgType = "video";
+        else if (msg.hasAudioMessage()) msgType = "audio";
+        else if (msg.hasDocumentMessage()) msgType = "document";
+
+        BinaryNode plaintextNode = new BinaryNode("plaintext", java.util.Map.of(), msg.toByteArray());
+
+        BinaryNode stanza = new BinaryNode("message", java.util.Map.of(
+            "to", newsletterJid,
+            "id", msgId,
+            "type", msgType
+        ), java.util.List.of(plaintextNode));
+
+        send(stanza);
+        LOG.info("Sent newsletter message id={} to={} type={}", msgId, newsletterJid, msgType);
+        return java.util.concurrent.CompletableFuture.completedFuture(msgId);
+    }
+
+    /**
+     * Send a reaction to an existing message. Routes to {@link #sendDmMessage} for DM
+     * targets and {@link #sendGroupMessage} for group targets, based on {@code chatJid}
+     * suffix.
+     *
+     * @param chatJid           where the original message lives — group JID
+     *                          ({@code ...@g.us}) for group reactions, or the peer's
+     *                          bare JID for DMs
+     * @param targetMsgId       the original message's {@code id} attribute
+     * @param targetParticipant for group reactions, the device JID of the original
+     *                          message's sender; {@code null} for DMs
+     * @param fromMe            {@code true} if the target message was sent by us
+     * @param emoji             the reaction emoji; empty string removes our reaction
+     * @return future resolving to the reaction message's id
+     */
+    public java.util.concurrent.CompletableFuture<String> sendReaction(
+            String chatJid,
+            String targetMsgId,
+            String targetParticipant,
+            boolean fromMe,
+            String emoji) {
+        long ts = System.currentTimeMillis();
+        id.jawa.proto.Wa.Message msg = MessageEncoder.reaction(
+            chatJid, targetMsgId, targetParticipant, fromMe, emoji, ts);
+        if (chatJid.endsWith("@g.us")) {
+            return sendGroupMessage(chatJid, msg);
+        }
+        return sendDmMessage(chatJid, msg);
+    }
+
+    /**
+     * React to a received message.
+     * Automatically extracts target details from the decoded message.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendReaction(
+            id.jawa.feature.messaging.MessageReceiver.Decoded target, String emoji) {
+        String chatJid = target.groupJid() != null ? target.groupJid() : target.senderJid();
+        if (!chatJid.endsWith("@g.us")) {
+            id.jawa.domain.model.Jid j = id.jawa.domain.model.Jid.parse(chatJid);
+            if (j != null) chatJid = j.user() + "@" + j.server();
+        }
+        id.jawa.domain.model.Jid myJid = id.jawa.domain.model.Jid.parse(creds.meJid);
+        id.jawa.domain.model.Jid senderJid = id.jawa.domain.model.Jid.parse(target.senderJid());
+        boolean fromMe = myJid != null && senderJid != null && myJid.user().equals(senderJid.user());
+        String targetParticipant = target.groupJid() != null ? target.senderJid() : null;
+        return sendReaction(chatJid, target.msgId(), targetParticipant, fromMe, emoji);
+    }
+
+    /**
+     * Send a text reply that quotes an existing message. Routes DM vs group based on
+     * {@code chatJid} suffix.
+     *
+     * @param chatJid       chat where the reply lives (group JID or peer's bare JID)
+     * @param text          the new reply text
+     * @param quotedMsgId   id of the message being quoted
+     * @param quotedSender  sender JID of the quoted message; {@code null} for DM
+     * @param quotedText    short preview of the quoted text; used to render the
+     *                      block-quote on the recipient's UI
+     * @return future resolving to the reply message's id
+     */
+    public java.util.concurrent.CompletableFuture<String> sendReply(
+            String chatJid,
+            String text,
+            String quotedMsgId,
+            String quotedSender,
+            String quotedText) {
+        id.jawa.proto.Wa.Message msg = MessageEncoder.reply(
+            text, quotedMsgId, quotedSender, quotedText);
+        if (chatJid.endsWith("@g.us")) {
+            return sendGroupMessage(chatJid, msg);
+        }
+        return sendDmMessage(chatJid, msg);
+    }
+
+    /**
+     * Send a text reply quoting a received message.
+     * Automatically extracts target details from the decoded message.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendReply(
+            id.jawa.feature.messaging.MessageReceiver.Decoded target, String text) {
+        String chatJid = target.groupJid() != null ? target.groupJid() : target.senderJid();
+        if (!chatJid.endsWith("@g.us")) {
+            id.jawa.domain.model.Jid j = id.jawa.domain.model.Jid.parse(chatJid);
+            if (j != null) chatJid = j.user() + "@" + j.server();
+        }
+        String quotedSender = target.groupJid() != null ? target.senderJid() : null;
+        String quotedText = target.text() != null ? target.text() : "";
+        return sendReply(chatJid, text, target.msgId(), quotedSender, quotedText);
+    }
+
+    /**
+     * Send a {@code listMessage} — dropdown of selectable options grouped into
+     * sections. Routes DM vs group based on {@code chatJid} suffix.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendListMessage(
+            String chatJid,
+            String title,
+            String body,
+            String footer,
+            String buttonText,
+            java.util.List<MessageEncoder.ListSection> sections) {
+        id.jawa.proto.Wa.Message msg = MessageEncoder.listMessage(
+            title, body, footer, buttonText, sections);
+        return chatJid.endsWith("@g.us")
+            ? sendGroupMessage(chatJid, msg)
+            : sendDmMessage(chatJid, msg);
+    }
+
+    /**
+     * Send an {@code interactiveMessage} with call-to-action buttons (URL / copy /
+     * call). Build the button list with {@link MessageEncoder.CtaButton#url},
+     * {@link MessageEncoder.CtaButton#copy}, {@link MessageEncoder.CtaButton#call}.
+     *
+     * <p>Routes DM vs group based on {@code chatJid} suffix.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendCtaButtons(
+            String chatJid,
+            String body,
+            String footer,
+            java.util.List<MessageEncoder.CtaButton> buttons) {
+        id.jawa.proto.Wa.Message msg = MessageEncoder.interactiveCtaButtons(body, footer, buttons);
+        return chatJid.endsWith("@g.us")
+            ? sendGroupMessage(chatJid, msg)
+            : sendDmMessage(chatJid, msg);
+    }
+
+    /**
+     * Input shape for {@link #sendCarousel} — raw media bytes + buttons per card,
+     * before the per-card upload step. Use {@code mimetype} starting with
+     * {@code "image/"} or {@code "video/"} to pick the upload pipeline.
+     */
+    public record CarouselCardInput(
+        String title,
+        String caption,
+        byte[] mediaBytes,
+        String mimetype,
+        String footer,
+        java.util.List<MessageEncoder.CtaButton> buttons
+    ) {}
+
+    /**
+     * Send a carousel — horizontally-scrollable cards. Each card's media is encrypted
+     * and uploaded in parallel; once all uploads land, the cards are assembled into
+     * an {@code interactiveMessage.carouselMessage} and routed through the existing
+     * DM/group pipeline.
+     *
+     * <p>WhatsApp rejects cards without a media header, so every input must carry
+     * non-empty {@code mediaBytes}.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendCarousel(
+            String chatJid,
+            String body,
+            String footer,
+            java.util.List<CarouselCardInput> inputs) {
+        return sendCarousel(chatJid, body, footer, inputs, null);
+    }
+
+    public java.util.concurrent.CompletableFuture<String> sendCarousel(
+            String chatJid,
+            String body,
+            String footer,
+            java.util.List<CarouselCardInput> inputs,
+            id.jawa.proto.Wa.ContextInfo quoted) {
+        java.util.List<java.util.concurrent.CompletableFuture<MessageEncoder.CarouselCard>> futures =
+            new java.util.ArrayList<>();
+        for (CarouselCardInput in : inputs) {
+            boolean isVideo = in.mimetype() != null && in.mimetype().startsWith("video/");
+            id.jawa.feature.media.MediaCrypto.MediaType type = isVideo
+                ? id.jawa.feature.media.MediaCrypto.MediaType.VIDEO
+                : id.jawa.feature.media.MediaCrypto.MediaType.IMAGE;
+            futures.add(encryptAndUpload(in.mediaBytes(), type).thenApply(u -> {
+                if (isVideo) {
+                    id.jawa.proto.Wa.Message inner = MessageEncoder.videoMessage(
+                        u.upload().url(), u.upload().directPath(),
+                        u.mediaKey(),
+                        u.enc().fileSha256(), u.enc().fileEncSha256(),
+                        in.mediaBytes().length, in.mimetype(),
+                        in.caption(), 0, 0, 0);
+                    return new MessageEncoder.CarouselCard(
+                        in.title(), in.caption(), null, inner.getVideoMessage(),
+                        in.footer(), in.buttons());
+                }
+                id.jawa.proto.Wa.Message inner = MessageEncoder.imageMessage(
+                    u.upload().url(), u.upload().directPath(),
+                    u.mediaKey(),
+                    u.enc().fileSha256(), u.enc().fileEncSha256(),
+                    in.mediaBytes().length, in.mimetype(), in.caption());
+                return new MessageEncoder.CarouselCard(
+                    in.title(), in.caption(), inner.getImageMessage(), null,
+                    in.footer(), in.buttons());
+            }));
+        }
+        java.util.concurrent.CompletableFuture<Void> all = java.util.concurrent.CompletableFuture
+            .allOf(futures.toArray(new java.util.concurrent.CompletableFuture[0]));
+        return all.thenCompose(v -> {
+            java.util.List<MessageEncoder.CarouselCard> cards = new java.util.ArrayList<>();
+            for (var f : futures) cards.add(f.join());
+            id.jawa.proto.Wa.Message msg = MessageEncoder.interactiveCarousel(body, footer, cards);
+            if (quoted != null) {
+                msg = msg.toBuilder()
+                    .setInteractiveMessage(msg.getInteractiveMessage().toBuilder().setContextInfo(quoted))
+                    .build();
+            }
+            return sendBuiltMessage(chatJid, msg);
+        });
+    }
+
+    /**
+     * Send a {@code buttonsMessage} — up to 3 quick-reply buttons rendered below
+     * {@code body}. When tapped, the recipient gets a {@code buttonsResponseMessage}
+     * with the matching {@code buttonId}.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendButtonsMessage(
+            String chatJid,
+            String body,
+            String footer,
+            java.util.List<MessageEncoder.QuickReplyButton> buttons) {
+        id.jawa.proto.Wa.Message msg = MessageEncoder.buttonsMessage(body, footer, buttons);
+        return chatJid.endsWith("@g.us")
+            ? sendGroupMessage(chatJid, msg)
+            : sendDmMessage(chatJid, msg);
+    }
+
+    /**
+     * Edit a previously-sent text message. WhatsApp's UI shows the replacement and an
+     * "edited" tag. Subject to ~15-minute server-side edit window.
+     *
+     * @param chatJid       chat where the original was sent
+     * @param targetMsgId   id returned by the original {@link #sendText} /
+     *                      {@link #sendGroupText} call
+     * @param newText       the replacement text
+     * @return future resolving to the edit message's id (a new id, distinct from
+     *         {@code targetMsgId})
+     */
+    public java.util.concurrent.CompletableFuture<String> sendEdit(
+            String chatJid,
+            String targetMsgId,
+            String newText) {
+        id.jawa.proto.Wa.Message inner = MessageEncoder.text(newText);
+        id.jawa.proto.Wa.Message msg = MessageEncoder.edit(
+            chatJid, targetMsgId, inner, System.currentTimeMillis());
+        if (chatJid.endsWith("@g.us")) {
+            return sendGroupMessage(chatJid, msg);
+        }
+        return sendDmMessage(chatJid, msg);
+    }
+
+    /**
+     * Edit a previously-sent message.
+     * Automatically extracts target details from the decoded message.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendEdit(
+            id.jawa.feature.messaging.MessageReceiver.Decoded target, String newText) {
+        String chatJid = target.groupJid() != null ? target.groupJid() : target.senderJid();
+        if (!chatJid.endsWith("@g.us")) {
+            id.jawa.domain.model.Jid j = id.jawa.domain.model.Jid.parse(chatJid);
+            if (j != null) chatJid = j.user() + "@" + j.server();
+        }
+        return sendEdit(chatJid, target.msgId(), newText);
+    }
+
+
+    /**
+     * Revoke (delete-for-everyone) a message.
+     *
+     * @param chatJid           chat where the original lives
+     * @param targetMsgId       id of the message to revoke
+     * @param targetParticipant for revoking someone else's message in a group (admin
+     *                          action), the sender's device JID; {@code null} when
+     *                          revoking your own
+     * @param fromMe            {@code true} if the target message was sent by us
+     */
+    /**
+     * Download + decrypt an inbound media payload referenced by a {@code Wa.Message}
+     * {@code imageMessage} / {@code videoMessage} / {@code audioMessage} /
+     * {@code documentMessage}. Prefer the {@code url} when set; fall back to
+     * {@code directPath} resolved via {@link #refreshMediaConn}.
+     *
+     * @param url            the {@code url} field on the inbound media message; may be empty
+     * @param directPath     the {@code directPath} field; required when {@code url} is empty
+     * @param mediaKey       32-byte media key
+     * @param fileEncSha256  envelope SHA-256 (over ciphertext+MAC); used for integrity check
+     * @param type           which {@code MediaType} the message was encrypted under
+     * @return future resolving to the plaintext bytes
+     */
+    public java.util.concurrent.CompletableFuture<byte[]> downloadMedia(
+            String url,
+            String directPath,
+            byte[] mediaKey,
+            byte[] fileEncSha256,
+            id.jawa.feature.media.MediaCrypto.MediaType type) {
+        if (url != null && !url.isEmpty()) {
+            return java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+                try {
+                    return id.jawa.feature.media.MediaDownloader.downloadByUrl(url, mediaKey, fileEncSha256, type);
+                } catch (java.io.IOException | InterruptedException e) {
+                    throw new java.util.concurrent.CompletionException(e);
+                }
+            });
+        }
+        if (directPath == null || directPath.isEmpty()) {
+            return java.util.concurrent.CompletableFuture.failedFuture(
+                new IllegalArgumentException("both url and directPath are empty"));
+        }
+        return refreshMediaConn().thenCompose(mc ->
+            java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+                try {
+                    return id.jawa.feature.media.MediaDownloader.downloadByDirectPath(
+                        mc, directPath, mediaKey, fileEncSha256, type);
+                } catch (java.io.IOException | InterruptedException e) {
+                    throw new java.util.concurrent.CompletionException(e);
+                }
+            }));
+    }
+
+    /** Bundle of (mediaKey, encrypted, upload) for the per-type send helpers below. */
+    private record MediaUpload(
+        byte[] mediaKey,
+        id.jawa.feature.media.MediaCrypto.EncryptedMedia enc,
+        id.jawa.feature.media.MediaUploader.Result upload
+    ) {}
+
+    /**
+     * Encrypt + upload + bundle. The named send helpers (sendImage/Video/Audio/
+     * Document) build the type-specific {@code Wa.Message} on top of this.
+     */
+    private java.util.concurrent.CompletableFuture<MediaUpload> encryptAndUpload(
+            byte[] bytes,
+            id.jawa.feature.media.MediaCrypto.MediaType type) {
+        byte[] mediaKey = id.jawa.protocol.crypto.Bytes.random(32);
+        id.jawa.feature.media.MediaCrypto.EncryptedMedia enc =
+            id.jawa.feature.media.MediaCrypto.encrypt(bytes, mediaKey, type);
+        return refreshMediaConn().thenCompose(mc -> {
+            try {
+                id.jawa.feature.media.MediaUploader.Result up =
+                    id.jawa.feature.media.MediaUploader.upload(mc, enc, type);
+                return java.util.concurrent.CompletableFuture.completedFuture(
+                    new MediaUpload(mediaKey, enc, up));
+            } catch (java.io.IOException | InterruptedException e) {
+                return java.util.concurrent.CompletableFuture.failedFuture(e);
+            }
+        });
+    }
+
+    private java.util.concurrent.CompletableFuture<String> sendBuiltMessage(
+            String chatJid, id.jawa.proto.Wa.Message msg) {
+        if (chatJid.endsWith("@newsletter")) {
+            return sendNewsletterMessage(chatJid, msg);
+        }
+        return chatJid.endsWith("@g.us")
+            ? sendGroupMessage(chatJid, msg)
+            : sendDmMessage(chatJid, msg);
+    }
+
+    /**
+     * Upload + send an image. Pipeline: encrypt {@code imageBytes} with a fresh random
+     * media key, refresh the mediaConn auth, HTTPS POST the ciphertext to the media
+     * server, build a {@code Wa.Message.imageMessage}, and ship it through
+     * {@link #sendDmMessage} / {@link #sendGroupMessage} depending on {@code chatJid}.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendImage(
+            String chatJid,
+            byte[] imageBytes,
+            String mimetype,
+            String caption) {
+        return encryptAndUpload(imageBytes, id.jawa.feature.media.MediaCrypto.MediaType.IMAGE)
+            .thenCompose(u -> sendBuiltMessage(chatJid,
+                MessageEncoder.imageMessage(
+                    u.upload().url(), u.upload().directPath(),
+                    u.mediaKey(),
+                    u.enc().fileSha256(), u.enc().fileEncSha256(),
+                    imageBytes.length, mimetype, caption)));
+    }
+
+    /**
+     * Send an image as view-once — recipient sees it exactly once before WhatsApp
+     * purges the media from their chat. Pipeline identical to {@link #sendImage};
+     * the resulting {@code imageMessage} is wrapped in {@code viewOnceMessageV2}.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendImageViewOnce(
+            String chatJid, byte[] imageBytes, String mimetype, String caption) {
+        return encryptAndUpload(imageBytes, id.jawa.feature.media.MediaCrypto.MediaType.IMAGE)
+            .thenCompose(u -> {
+                id.jawa.proto.Wa.Message inner = MessageEncoder.imageMessage(
+                    u.upload().url(), u.upload().directPath(),
+                    u.mediaKey(),
+                    u.enc().fileSha256(), u.enc().fileEncSha256(),
+                    imageBytes.length, mimetype, caption);
+                return sendBuiltMessage(chatJid, MessageEncoder.viewOnceWrap(inner));
+            });
+    }
+
+    /** See {@link #sendImageViewOnce} — same wrap, applied to a video. */
+    public java.util.concurrent.CompletableFuture<String> sendVideoViewOnce(
+            String chatJid, byte[] videoBytes, String mimetype, String caption,
+            int seconds, int width, int height) {
+        return encryptAndUpload(videoBytes, id.jawa.feature.media.MediaCrypto.MediaType.VIDEO)
+            .thenCompose(u -> {
+                id.jawa.proto.Wa.Message inner = MessageEncoder.videoMessage(
+                    u.upload().url(), u.upload().directPath(),
+                    u.mediaKey(),
+                    u.enc().fileSha256(), u.enc().fileEncSha256(),
+                    videoBytes.length, mimetype, caption, seconds, width, height);
+                return sendBuiltMessage(chatJid, MessageEncoder.viewOnceWrap(inner));
+            });
+    }
+
+    /** See {@link #sendImageViewOnce} — same idea but for audio (wrapped via {@code viewOnceMessageV2Extension}). */
+    public java.util.concurrent.CompletableFuture<String> sendAudioViewOnce(
+            String chatJid, byte[] audioBytes, String mimetype, int seconds, boolean ptt) {
+        return encryptAndUpload(audioBytes, id.jawa.feature.media.MediaCrypto.MediaType.AUDIO)
+            .thenCompose(u -> {
+                id.jawa.proto.Wa.Message inner = MessageEncoder.audioMessage(
+                    u.upload().url(), u.upload().directPath(),
+                    u.mediaKey(),
+                    u.enc().fileSha256(), u.enc().fileEncSha256(),
+                    audioBytes.length, mimetype, seconds, ptt);
+                return sendBuiltMessage(chatJid, MessageEncoder.viewOnceExtensionWrap(inner));
+            });
+    }
+
+    /**
+     * Upload + send a video. Pass {@code 0} for unknown {@code seconds} / {@code width} /
+     * {@code height} — the proto fields stay unset and clients fall back to their own
+     * probing.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendVideo(
+            String chatJid,
+            byte[] videoBytes,
+            String mimetype,
+            String caption,
+            int seconds,
+            int width,
+            int height) {
+        return encryptAndUpload(videoBytes, id.jawa.feature.media.MediaCrypto.MediaType.VIDEO)
+            .thenCompose(u -> sendBuiltMessage(chatJid,
+                MessageEncoder.videoMessage(
+                    u.upload().url(), u.upload().directPath(),
+                    u.mediaKey(),
+                    u.enc().fileSha256(), u.enc().fileEncSha256(),
+                    videoBytes.length, mimetype,
+                    caption, seconds, width, height)));
+    }
+
+    /**
+     * Upload + send an audio file. Set {@code ptt=true} for a voice note (the bubble
+     * with the play/waveform UI), {@code false} for a generic audio attachment.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendAudio(
+            String chatJid,
+            byte[] audioBytes,
+            String mimetype,
+            int seconds,
+            boolean ptt) {
+        return encryptAndUpload(audioBytes, id.jawa.feature.media.MediaCrypto.MediaType.AUDIO)
+            .thenCompose(u -> sendBuiltMessage(chatJid,
+                MessageEncoder.audioMessage(
+                    u.upload().url(), u.upload().directPath(),
+                    u.mediaKey(),
+                    u.enc().fileSha256(), u.enc().fileEncSha256(),
+                    audioBytes.length, mimetype, seconds, ptt)));
+    }
+
+    /**
+     * Upload + send a document. {@code fileName} is what the recipient sees as the
+     * document label; {@code title} is an optional richer display title.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendDocument(
+            String chatJid,
+            byte[] documentBytes,
+            String mimetype,
+            String fileName,
+            String title) {
+        return encryptAndUpload(documentBytes, id.jawa.feature.media.MediaCrypto.MediaType.DOCUMENT)
+            .thenCompose(u -> sendBuiltMessage(chatJid,
+                MessageEncoder.documentMessage(
+                    u.upload().url(), u.upload().directPath(),
+                    u.mediaKey(),
+                    u.enc().fileSha256(), u.enc().fileEncSha256(),
+                    documentBytes.length, mimetype, fileName, title)));
+    }
+
+    public java.util.concurrent.CompletableFuture<String> sendRevoke(
+            String chatJid,
+            String targetMsgId,
+            String targetParticipant,
+            boolean fromMe) {
+        id.jawa.proto.Wa.Message msg = MessageEncoder.revoke(
+            chatJid, targetMsgId, targetParticipant, fromMe);
+        if (chatJid.endsWith("@g.us")) {
+            return sendGroupMessage(chatJid, msg);
+        }
+        return sendDmMessage(chatJid, msg);
+    }
+
+    /**
+     * Revoke (delete-for-everyone) a received or sent message.
+     * Automatically extracts target details from the decoded message.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendRevoke(
+            id.jawa.feature.messaging.MessageReceiver.Decoded target) {
+        String chatJid = target.groupJid() != null ? target.groupJid() : target.senderJid();
+        if (!chatJid.endsWith("@g.us")) {
+            id.jawa.domain.model.Jid j = id.jawa.domain.model.Jid.parse(chatJid);
+            if (j != null) chatJid = j.user() + "@" + j.server();
+        }
+        id.jawa.domain.model.Jid myJid = id.jawa.domain.model.Jid.parse(creds.meJid);
+        id.jawa.domain.model.Jid senderJid = id.jawa.domain.model.Jid.parse(target.senderJid());
+        boolean fromMe = myJid != null && senderJid != null && myJid.user().equals(senderJid.user());
+        String targetParticipant = target.groupJid() != null ? target.senderJid() : null;
+        return sendRevoke(chatJid, target.msgId(), targetParticipant, fromMe);
+    }
+
+
+    private volatile id.jawa.feature.media.MediaConn mediaConnCache;
+    private final Object mediaConnLock = new Object();
+
+    /**
+     * Get a cached {@link id.jawa.feature.media.MediaConn} or fetch a fresh one if expired.
+     * Required for {@code MediaUploader.upload(...)}.
+     */
+    public java.util.concurrent.CompletableFuture<id.jawa.feature.media.MediaConn> refreshMediaConn() {
+        synchronized (mediaConnLock) {
+            id.jawa.feature.media.MediaConn cached = mediaConnCache;
+            if (cached != null && !cached.isExpired(java.time.Instant.now())) {
+                return java.util.concurrent.CompletableFuture.completedFuture(cached);
+            }
+        }
+        String iqId = newIqId();
+        BinaryNode iq = id.jawa.feature.media.MediaConn.buildQuery(iqId);
+        LOG.debug("Sent mediaConn IQ id={}", iqId);
+        return sendIqAsync(iq).thenApply(resp -> {
+            if ("error".equals(resp.attr("type"))) {
+                LOG.warn("mediaConn IQ rejected: {}", resp);
+                throw new IllegalStateException("mediaConn IQ rejected");
+            }
+            id.jawa.feature.media.MediaConn fresh = id.jawa.feature.media.MediaConn.parseResponse(resp);
+            if (fresh == null) {
+                throw new IllegalStateException("malformed mediaConn response: " + resp);
+            }
+            synchronized (mediaConnLock) {
+                mediaConnCache = fresh;
+            }
+            LOG.debug("Got mediaConn: {} host(s), ttl={}s", fresh.hosts().size(), fresh.ttlSeconds());
+            return fresh;
+        });
+    }
+
+    /**
+     * Create a new group with the given subject and initial participant list. Do not
+     * include our own JID in {@code participantBareJids} — the server adds us implicitly.
+     *
+     * @return future resolving to the new group's JID on success
+     */
+    public java.util.concurrent.CompletableFuture<String> createGroup(
+            String name, java.util.List<String> participantBareJids) {
+        String iqId = newIqId();
+        String createKey = newIqId().toUpperCase();
+        BinaryNode iq = id.jawa.feature.messaging.GroupAction.buildCreate(
+            iqId, name, participantBareJids, createKey);
+        return sendIqAsync(iq).thenApply(resp -> {
+            if ("error".equals(resp.attr("type"))) {
+                throw new IllegalStateException("createGroup rejected: " + resp);
+            }
+            BinaryNode group = resp.child("group");
+            if (group == null) throw new IllegalStateException("createGroup response missing <group>: " + resp);
+            String jid = group.attr("id");
+            if (jid != null && !jid.contains("@")) jid = jid + "@" + id.jawa.domain.model.Jid.SERVER_GROUP;
+            return jid;
+        });
+    }
+
+    /** Leave the given group. */
+    public java.util.concurrent.CompletableFuture<Void> leaveGroup(String groupJid) {
+        String iqId = newIqId();
+        BinaryNode iq = id.jawa.feature.messaging.GroupAction.buildLeave(iqId, groupJid);
+        return sendIqAsync(iq).thenAccept(resp -> {
+            if ("error".equals(resp.attr("type"))) {
+                throw new IllegalStateException("leaveGroup rejected: " + resp);
+            }
+        });
+    }
+
+    /**
+     * Add / remove / promote / demote participants. Requires admin rights on the group
+     * for all four actions.
+     *
+     * @param groupJid             target group {@code @g.us}
+     * @param action               which change to apply
+     * @param participantBareJids  list of bare JIDs to change (no device suffix)
+     */
+    public java.util.concurrent.CompletableFuture<Void> updateGroupParticipants(
+            String groupJid,
+            id.jawa.feature.messaging.GroupAction.ParticipantChange action,
+            java.util.List<String> participantBareJids) {
+        String iqId = newIqId();
+        BinaryNode iq = id.jawa.feature.messaging.GroupAction.buildParticipantChange(
+            iqId, groupJid, action, participantBareJids);
+        return sendIqAsync(iq).thenAccept(resp -> {
+            if ("error".equals(resp.attr("type"))) {
+                throw new IllegalStateException(action + " rejected: " + resp);
+            }
+        });
+    }
+
+    /** Set the group subject (name). 25-char limit server-side. */
+    public java.util.concurrent.CompletableFuture<Void> setGroupSubject(String groupJid, String name) {
+        String iqId = newIqId();
+        BinaryNode iq = id.jawa.feature.messaging.GroupAction.buildSetSubject(iqId, groupJid, name);
+        return sendIqAsync(iq).thenAccept(resp -> {
+            if ("error".equals(resp.attr("type"))) {
+                throw new IllegalStateException("setGroupSubject rejected: " + resp);
+            }
+        });
+    }
+
+    /**
+     * Set or clear the group description (topic).
+     *
+     * @param groupJid    target group
+     * @param body        new description; pass {@code null} or empty to delete
+     * @param previousId  the previous description's id (caller fetches via {@link
+     *                    #queryJoinedGroups} or tracks from a prior set call); pass
+     *                    {@code null} if this is the first description on the group
+     */
+    public java.util.concurrent.CompletableFuture<Void> setGroupDescription(
+            String groupJid, String body, String previousId) {
+        String iqId = newIqId();
+        String newId = newIqId().toUpperCase();
+        BinaryNode iq = id.jawa.feature.messaging.GroupAction.buildSetDescription(
+            iqId, groupJid, body, previousId, newId);
+        return sendIqAsync(iq).thenAccept(resp -> {
+            if ("error".equals(resp.attr("type"))) {
+                throw new IllegalStateException("setGroupDescription rejected: " + resp);
+            }
+        });
+    }
+
+    /**
+     * Query the server for the list of groups this account participates in. Each entry
+     * carries the group JID, subject, creator, timestamps, and the per-member device
+     * list (one entry per participant, device-suffixed).
+     */
+    public java.util.concurrent.CompletableFuture<java.util.List<id.jawa.feature.messaging.GroupListQuery.GroupInfo>>
+            queryJoinedGroups() {
+        String iqId = newIqId();
+        BinaryNode iq = id.jawa.feature.messaging.GroupListQuery.buildQuery(iqId);
+        LOG.debug("Sent joined-groups query id={}", iqId);
+        return sendIqAsync(iq).thenApply(resp -> {
+            if ("error".equals(resp.attr("type"))) {
+                LOG.warn("Group list query rejected: {}", resp);
+                return java.util.List.of();
+            }
+            return id.jawa.feature.messaging.GroupListQuery.parseResponse(resp);
+        });
+    }
+
+    /**
+     * Convenience: bootstrap Signal sessions for every active device of {@code targetUser}.
+     * Runs USync, then fetches the pre-key bundle for each device, then installs sessions.
+     */
+    public java.util.concurrent.CompletableFuture<java.util.List<org.whispersystems.libsignal.SignalProtocolAddress>>
+            bootstrapSessions(String targetUser) {
+        return queryDevices(java.util.List.of(targetUser))
+            .thenCompose(devicesMap -> {
+                var devices = devicesMap.getOrDefault(targetUser, java.util.List.of());
+                if (devices.isEmpty()) {
+                    java.util.List<org.whispersystems.libsignal.SignalProtocolAddress> empty = java.util.List.of();
+                    return java.util.concurrent.CompletableFuture.completedFuture(empty);
+                }
+                id.jawa.domain.model.Jid base = id.jawa.domain.model.Jid.parse(targetUser);
+                String user = base.user();
+                String server = base.server();
+                java.util.List<String> deviceJids = new java.util.ArrayList<>(devices.size());
+                for (var d : devices) deviceJids.add(d.asJid(user, server).asString());
+                return fetchBundlesAndInstallSessions(deviceJids);
+            });
+    }
+
+    /**
+     * Query the device list for one or more JIDs (USync).
+     * Returns {@code targetJid → ordered device list}.
+     */
+    public java.util.concurrent.CompletableFuture<java.util.Map<String, java.util.List<id.jawa.domain.model.DeviceInfo>>>
+            queryDevices(java.util.Collection<String> targetJids) {
+        String iqId = newIqId();
+        String sid = "jawa-" + Bytes.toHex(Bytes.random(4));
+        BinaryNode q = id.jawa.feature.messaging.UsyncQuery.buildDeviceListQuery(iqId, sid, targetJids);
+        LOG.debug("Sent USync device-list query id={} sid={} for {}", iqId, sid, targetJids);
+        return sendIqAsync(q).thenApply(resp -> {
+            LOG.debug("USync response: {}", resp);
+            return id.jawa.feature.messaging.UsyncQuery.parseDeviceListResult(resp);
+        });
+    }
+
+    /**
+     * Tell the server we want real-time message delivery instead of having stanzas queued
+     * for retrieval. Without this, WA holds messages until the client explicitly drains
+     * them — manifests as "5-min idle then disconnect, no inbound &lt;message&gt; ever fires"
+     * during testing. Mirrors {@code Client.sendPassive(false)} in whatsmeow.
+     */
+    private void sendActivePassive() {
+        String iqId = newIqId();
+        BinaryNode iq = new BinaryNode("iq",
+            java.util.Map.of(
+                "to",    id.jawa.domain.model.Jid.SERVER_WHATSAPP,
+                "xmlns", "passive",
+                "type",  "set",
+                "id",    iqId
+            ),
+            java.util.List.of(new BinaryNode("active", java.util.Map.of(), null)));
+        sendIq(iq, resp -> {
+            if ("error".equals(resp.attr("type"))) {
+                LOG.warn("active/passive IQ rejected: {}", resp);
+            } else {
+                LOG.debug("Server acknowledged active mode (id={})", iqId);
+            }
+        });
+    }
+
+    /**
+     * Tell the server this device is online and available for routing. Without this,
+     * the server treats the device as background/idle: last-seen freezes at login
+     * time and peers' messages don't get delivered as {@code <message>} stanzas to us.
+     *
+     * <p>Stanza shape: {@code <presence type="available" name="<pushName>"/>}. The
+     * {@code name} attr is what other users see as our display name; we use
+     * {@code creds.pushName} when available, falling back to {@code "JaWa"}.
+     */
+    private void sendPresenceAvailable() {
+        String name = (creds != null && creds.pushName != null && !creds.pushName.isBlank())
+            ? creds.pushName
+            : "JaWa";
+        try {
+            send(new BinaryNode("presence", java.util.Map.of(
+                "type", "available",
+                "name", name
+            ), null));
+            LOG.debug("Sent presence available (name=\"{}\")", name);
+        } catch (RuntimeException e) {
+            LOG.warn("Failed to send presence available", e);
+        }
+    }
+
+    /** Upload {@code PRE_KEY_UPLOAD_COUNT} one-time pre-keys to the server. */
+    private void uploadPreKeys() {
+        var preKeys = PreKeyManager.generate(creds, signalStore, PRE_KEY_UPLOAD_COUNT);
+        if (preKeys.isEmpty()) {
+            LOG.debug("No new pre-keys to upload");
+            return;
+        }
+        // Mirror each pre-key into the libsignal protocolStore so inbound <enc type=pkmsg>
+        // can resolve the one-time pre-key id the server handed out. signalStore is the
+        // raw KeyPair25519 home; protocolStore is what SessionCipher.decrypt actually reads.
+        for (var entry : preKeys.entrySet()) {
+            try {
+                byte[] prefixedPub = Curve25519.prependType(entry.getValue().publicKey());
+                org.whispersystems.libsignal.ecc.ECKeyPair kp =
+                    new org.whispersystems.libsignal.ecc.ECKeyPair(
+                        org.whispersystems.libsignal.ecc.Curve.decodePoint(prefixedPub, 0),
+                        org.whispersystems.libsignal.ecc.Curve.decodePrivatePoint(entry.getValue().privateKey()));
+                protocolStore.storePreKey(entry.getKey(),
+                    new org.whispersystems.libsignal.state.PreKeyRecord(entry.getKey(), kp));
+            } catch (org.whispersystems.libsignal.InvalidKeyException e) {
+                LOG.warn("Failed to seed pre-key {} into protocolStore", entry.getKey(), e);
+            }
+        }
+        String iqId = newIqId();
+        BinaryNode iq = PreKeyManager.buildUploadStanza(iqId, creds, preKeys);
+        sendIq(iq, response -> {
+            if ("error".equals(response.attr("type"))) {
+                LOG.warn("Pre-key upload rejected: {}", response);
+                return;
+            }
+            PreKeyManager.markUploaded(creds, preKeys);
+            try { store.save(creds); } catch (Exception e) { LOG.warn("Failed to save creds after pre-key upload", e); }
+            LOG.info("Uploaded {} pre-keys (ids {}..{})",
+                preKeys.size(),
+                preKeys.keySet().iterator().next(),
+                preKeys.keySet().stream().reduce((a, b) -> b).get());
+        });
+        LOG.debug("Sent pre-key upload IQ id={} ({} keys)", iqId, preKeys.size());
+    }
+
+    private boolean handleStanza(BinaryNode node, PairingHandler pair) throws Exception {
+        if ("stream:error".equals(node.tag())) {
+            String code = node.attr("code");
+            if ("515".equals(code)) {
+                // Documented post-pair signal — server wants us to reconnect with login creds.
+                LOG.info("Server requested restart (code=515) — expected after pairing; reconnect to enter steady state");
+            } else {
+                handleStreamError(node);
+            }
+            return true;
+        }
+        if ("xmlstreamend".equals(node.tag())) {
+            LOG.debug("Server sent stream end");
+            return true;
+        }
+        if ("success".equals(node.tag())) {
+            LOG.info("Login successful — meJid={} lid={} platform={}",
+                node.attr("jid", creds.meJid),
+                node.attr("lid", creds.meLid),
+                node.attr("platform", creds.platform));
+            reconnectAttempts.set(0); // login worked — backoff resets
+            sendActivePassive();
+            sendPresenceAvailable();
+            listener.onConnected();
+            uploadPreKeys();
+            return true;
+        }
+        if ("failure".equals(node.tag())) {
+            handleFailure(node);
+            return true;
+        }
+        // Pair-code: primary device echoed back its ephemeral via a server-pushed notification
+        if ("notification".equals(node.tag())
+                && node.child("link_code_companion_reg") != null
+                && pairCodeHandler != null) {
+            try {
+                BinaryNode finish = pairCodeHandler.buildCompanionFinish(newIqId(), node);
+                send(finish);
+                LOG.debug("Sent companion_finish IQ");
+            } catch (Throwable t) {
+                LOG.warn("Failed to handle link_code notification", t);
+            }
+            // fall through to ack + listener — pair-code notification still needs an ack
+        }
+
+        // Server-pushed notifications and receipts MUST be acked, otherwise the offline
+        // queue piles up and the server eventually stops delivering <message> stanzas.
+        // We ack first, then fall through to listener.onStanza so consumers can read them.
+        if ("notification".equals(node.tag()) || "receipt".equals(node.tag())) {
+            try { sendAck(node); }
+            catch (Throwable t) { LOG.warn("Failed to ack {}", node.tag(), t); }
+            if ("receipt".equals(node.tag())) {
+                try {
+                    id.jawa.domain.model.Receipt parsed = id.jawa.domain.model.Receipt.parse(node);
+                    if (parsed != null) listener.onReceipt(parsed);
+                } catch (Throwable t) {
+                    LOG.warn("Failed to dispatch onReceipt", t);
+                }
+            }
+            return false;
+        }
+
+        if ("message".equals(node.tag())) {
+            handleInboundMessage(node);
+            return true;
+        }
+
+        if (!"iq".equals(node.tag())) return false;
+
+        // Result / error for an IQ we sent — fire the pending callback if any.
+        String type = node.attr("type");
+        if ("result".equals(type) || "error".equals(type)) {
+            String id = node.attr("id");
+            var cb = id == null ? null : pendingIqResults.remove(id);
+            if (cb != null) { cb.accept(node); return true; }
+        }
+
+        BinaryNode pairDevice  = node.child("pair-device");
+        BinaryNode pairSuccess = node.child("pair-success");
+
+        if (pairDevice != null) {
+            List<String> qrs = pair.qrRefsFrom(pairDevice);
+            send(pair.ackPairDevice(node.attr("id")));
+            LOG.info("Got {} QR refs", qrs.size());
+            listener.onQr(qrs);
+            return true;
+        }
+        if (pairSuccess != null) {
+            BinaryNode reply = pair.handlePairSuccess(node);
+            send(reply);
+            store.save(creds);
+            listener.onPaired(creds.meJid, creds.pushName, creds.platform);
+            // Server is about to send stream:error 515 and close the socket. Schedule a
+            // login-mode reconnect so we land in steady state before the new creds expire.
+            reconnectAfterPair.set(true);
+            return true;
+        }
+        // Auto-reply to keepalive pings so the connection stays up
+        if ("get".equals(node.attr("type"))
+                && "urn:xmpp:ping".equals(node.attr("xmlns"))) {
+            String pid = node.attr("id");
+            if (pid != null) {
+                send(new BinaryNode("iq",
+                    java.util.Map.of("to", id.jawa.domain.model.Jid.SERVER_WHATSAPP,
+                                     "type", "result",
+                                     "id", pid),
+                    null));
+            } else {
+                LOG.warn("Ping IQ has no id; cannot ack: {}", node);
+            }
+            return true;
+        }
+        return false;
+    }
+
+    /** Send a binary stanza (encrypts + frames). */
+    public void send(BinaryNode node) {
+        byte[] plain = BinaryEncoder.encode(node);
+        byte[] enc = transport.encrypt(plain);
+        frame.send(enc);
+    }
+
+    /**
+     * Decrypt an inbound {@code <message>}, fire {@code Listener.onMessage}, and emit
+     * the {@code <ack>} + {@code <receipt>} the server expects. On decrypt failure we
+     * still {@code <ack>} (otherwise the server keeps redelivering forever) and emit
+     * a {@code <receipt type="retry">} so the peer knows to re-encrypt with fresh keys.
+     */
+    private void handleInboundMessage(BinaryNode message) {
+        try {
+            id.jawa.feature.messaging.MessageReceiver.Decoded decoded =
+                id.jawa.feature.messaging.MessageReceiver.decode(message, protocolStore, senderKeyStore);
+            captureAppStateKeysFrom(decoded);
+            try { listener.onMessage(decoded); }
+            catch (Throwable t) { LOG.warn("listener.onMessage threw", t); }
+            sendAck(message);
+            sendDeliveryReceipt(message);
+        } catch (id.jawa.feature.messaging.MessageReceiver.DecryptException de) {
+            LOG.warn("Decrypt failed for message id={} from={}: {}",
+                message.attr("id"), message.attr("from"), de.getMessage());
+            sendAck(message);
+            sendRetryReceipt(message);
+        }
+    }
+
+    /**
+     * Transport-level acknowledgement. Without it the server keeps redelivering the
+     * stanza on every reconnect and eventually throttles new deliveries.
+     *
+     * <p>Attrs mirrored from the source stanza: {@code id}, {@code to} (from
+     * source's {@code from}), {@code class} (source's tag), and — when present —
+     * {@code participant}, {@code recipient}. For non-message stanzas, the source's
+     * {@code type} attribute is also preserved on the ack (e.g. {@code
+     * <receipt type="read">} → ack must carry {@code type="read"}, otherwise the
+     * server raises a stream:error and drops the connection).
+     */
+    private void sendAck(BinaryNode original) {
+        String id = original.attr("id");
+        String from = original.attr("from");
+        if (id == null || from == null) return;
+        java.util.Map<String, String> attrs = new java.util.LinkedHashMap<>();
+        attrs.put("class", original.tag());
+        attrs.put("id", id);
+        attrs.put("to", from);
+        String participant = original.attr("participant");
+        if (participant != null) attrs.put("participant", participant);
+        String recipient = original.attr("recipient");
+        if (recipient != null) attrs.put("recipient", recipient);
+        // <message> ack never carries type; everything else preserves it.
+        if (!"message".equals(original.tag())) {
+            String type = original.attr("type");
+            if (type != null) attrs.put("type", type);
+        }
+        send(new BinaryNode("ack", attrs, null));
+    }
+
+    /** Application-level "delivered" receipt — what produces the grey single-tick on the sender. */
+    private void sendDeliveryReceipt(BinaryNode message) {
+        sendReceipt(message, null);
+    }
+
+    /** Retry-receipt counter — each id is incremented per outbound retry so peer/server know. */
+    private final java.util.concurrent.ConcurrentMap<String, Integer> messageRetries
+        = new java.util.concurrent.ConcurrentHashMap<>();
+    private static final int MAX_RETRY_COUNT = 5;
+
+    /**
+     * "We couldn't decrypt — please re-encrypt for me." Sends a retry receipt with a
+     * {@code <retry>} child carrying the count + a {@code <registration>} child with
+     * our registration id, mirroring whatsmeow's {@code sendRetryReceipt}. The peer
+     * uses these to refetch our pre-key bundle and re-encrypt the message as pkmsg.
+     *
+     * <p>Bare {@code <receipt type=retry>} (no children) is not enough — peer needs
+     * the registration id to know which client to encrypt for.
+     */
+    private void sendRetryReceipt(BinaryNode message) {
+        String id = message.attr("id");
+        String from = message.attr("from");
+        if (id == null || from == null) return;
+
+        int retryCount = messageRetries.merge(id, 1, Integer::sum);
+        if (retryCount > MAX_RETRY_COUNT) {
+            LOG.warn("Giving up retry-receipt for id={} (count={} > {})", id, retryCount, MAX_RETRY_COUNT);
+            return;
+        }
+
+        java.util.Map<String, String> attrs = new java.util.LinkedHashMap<>();
+        attrs.put("id", id);
+        attrs.put("to", from);
+        attrs.put("type", "retry");
+        String participant = message.attr("participant");
+        if (participant != null) attrs.put("participant", participant);
+        String recipient = message.attr("recipient");
+        if (recipient != null) attrs.put("recipient", recipient);
+
+        BinaryNode retry = new BinaryNode("retry", java.util.Map.of(
+            "count", Integer.toString(retryCount),
+            "id",    id,
+            "t",     message.attr("t", "0"),
+            "v",     "1"
+        ), null);
+        BinaryNode registration = new BinaryNode("registration", java.util.Map.of(),
+            encodeUintBE(creds.registrationId, 4));
+
+        send(new BinaryNode("receipt", attrs, java.util.List.of(retry, registration)));
+        LOG.debug("Sent retry receipt id={} count={}", id, retryCount);
+    }
+
+    private static byte[] encodeUintBE(int value, int width) {
+        byte[] out = new byte[width];
+        for (int i = 0; i < width; i++) out[width - 1 - i] = (byte) ((value >>> (8 * i)) & 0xFF);
+        return out;
+    }
+
+    /**
+     * Send a read receipt (blue ticks). For DMs, pass {@code senderJid=null}. For groups,
+     * {@code senderJid} is the message sender's device JID (the {@code participant} attr
+     * on the original {@code <message>}).
+     *
+     * @param chatJid   the chat where the message lives (peer's bare JID or group {@code @g.us})
+     * @param msgId     the message id being marked as read
+     * @param senderJid sender's device JID for groups; {@code null} for DMs
+     */
+    public void sendReadReceipt(String chatJid, String msgId, String senderJid) {
+        sendStateReceipt(chatJid, msgId, senderJid, "read");
+    }
+
+    /**
+     * Send a read receipt (blue ticks) for a received message.
+     * Automatically extracts target details from the decoded message.
+     */
+    public void sendReadReceipt(id.jawa.feature.messaging.MessageReceiver.Decoded target) {
+        String chatJid = target.groupJid() != null ? target.groupJid() : target.senderJid();
+        String senderJid = target.groupJid() != null ? target.senderJid() : null;
+        sendReadReceipt(chatJid, target.msgId(), senderJid);
+    }
+
+    /** Send a played receipt for a voice note. See {@link #sendReadReceipt} for arg semantics. */
+    public void sendPlayedReceipt(String chatJid, String msgId, String senderJid) {
+        sendStateReceipt(chatJid, msgId, senderJid, "played");
+    }
+
+    /**
+     * Send a played receipt for a voice note.
+     * Automatically extracts target details from the decoded message.
+     */
+    public void sendPlayedReceipt(id.jawa.feature.messaging.MessageReceiver.Decoded target) {
+        String chatJid = target.groupJid() != null ? target.groupJid() : target.senderJid();
+        String senderJid = target.groupJid() != null ? target.senderJid() : null;
+        sendPlayedReceipt(chatJid, target.msgId(), senderJid);
+    }
+
+
+    /**
+     * Send a read/played receipt for multiple messages in one stanza. Useful when
+     * catching up a backlog. The first id rides as the {@code <receipt id=...>} attr,
+     * the rest as {@code <list><item id=.../>...} children.
+     */
+    public void sendReadReceiptBatch(String chatJid, java.util.List<String> msgIds, String senderJid) {
+        sendStateReceiptBatch(chatJid, msgIds, senderJid, "read");
+    }
+
+    private void sendStateReceipt(String chatJid, String msgId, String senderJid, String type) {
+        sendStateReceiptBatch(chatJid, java.util.List.of(msgId), senderJid, type);
+    }
+
+    private void sendStateReceiptBatch(String chatJid, java.util.List<String> msgIds,
+                                       String senderJid, String type) {
+        if (msgIds.isEmpty()) return;
+        java.util.Map<String, String> attrs = new java.util.LinkedHashMap<>();
+        attrs.put("id", msgIds.get(0));
+        attrs.put("type", type);
+        attrs.put("to", chatJid);
+        attrs.put("t", Long.toString(System.currentTimeMillis() / 1000));
+        if (senderJid != null && !senderJid.isBlank() && chatJid.endsWith("@g.us")) {
+            attrs.put("participant", senderJid);
+        }
+        BinaryNode receipt;
+        if (msgIds.size() == 1) {
+            receipt = new BinaryNode("receipt", attrs, null);
+        } else {
+            java.util.List<BinaryNode> items = new java.util.ArrayList<>();
+            for (int i = 1; i < msgIds.size(); i++) {
+                items.add(BinaryNode.of("item", java.util.Map.of("id", msgIds.get(i))));
+            }
+            BinaryNode list = new BinaryNode("list", java.util.Map.of(), items);
+            receipt = new BinaryNode("receipt", attrs, java.util.List.of(list));
+        }
+        send(receipt);
+    }
+
+    private void sendReceipt(BinaryNode message, String type) {
+        String id = message.attr("id");
+        String from = message.attr("from");
+        if (id == null || from == null) return;
+        java.util.Map<String, String> attrs = new java.util.LinkedHashMap<>();
+        attrs.put("id", id);
+        attrs.put("to", from);
+        if (type != null) attrs.put("type", type);
+        String participant = message.attr("participant");
+        if (participant != null) attrs.put("participant", participant);
+        String recipient = message.attr("recipient");
+        if (recipient != null) attrs.put("recipient", recipient);
+        send(new BinaryNode("receipt", attrs, null));
+    }
+
+    @Override
+    public void close() {
+        if (!closing.compareAndSet(false, true)) return;
+        if (keepalive != null) { keepalive.shutdownNow(); keepalive = null; }
+        if (frame != null) frame.close();
+        closeLatch.countDown();
+    }
+
+    /**
+     * Check if the given phone numbers are registered on WhatsApp.
+     * Uses USync contact query protocol.
+     */
+    public java.util.concurrent.CompletableFuture<java.util.Map<String, id.jawa.domain.model.ContactStatus>> isOnWhatsApp(
+            java.util.Collection<String> phones) {
+        String iqId = newIqId();
+        String sid = newIqId();
+        BinaryNode q = id.jawa.feature.messaging.UsyncQuery.buildContactQuery(iqId, sid, phones);
+        LOG.debug("Sent contact check USync IQ id={} for {} phones", iqId, phones.size());
+        return sendIqAsync(q).thenApply(id.jawa.feature.messaging.UsyncQuery::parseContactResult);
+    }
+
+    /**
+     * Send chat presence state (typing composing indicator or recording audio).
+     */
+    public void sendChatPresence(String chatJid, ChatPresence state) {
+        BinaryNode child;
+        if (state == ChatPresence.COMPOSING) {
+            child = new BinaryNode("composing", java.util.Map.of("media", "text"), null);
+        } else if (state == ChatPresence.RECORDING) {
+            child = new BinaryNode("composing", java.util.Map.of("media", "audio"), null);
+        } else {
+            child = new BinaryNode("paused", java.util.Map.of(), null);
+        }
+        BinaryNode stanza = new BinaryNode("chatstate", java.util.Map.of("to", chatJid), java.util.List.of(child));
+        send(stanza);
+        LOG.debug("Sent chat presence state={} to={}", state, chatJid);
+    }
+
+    /**
+     * Set global online/offline presence status.
+     * @param available true for "available" (online), false for "unavailable" (offline)
+     */
+    public void sendPresence(boolean available) {
+        BinaryNode stanza = new BinaryNode("presence", java.util.Map.of(
+            "type", available ? "available" : "unavailable"
+        ), null);
+        send(stanza);
+        LOG.debug("Sent presence type={}", available ? "available" : "unavailable");
+    }
+
+    /**
+     * Update/set the about/status text message for the bot account.
+     */
+    public java.util.concurrent.CompletableFuture<Void> setStatusMessage(String statusText) {
+        String iqId = newIqId();
+        BinaryNode statusNode = new BinaryNode("status", java.util.Map.of(), statusText.getBytes());
+        BinaryNode iq = new BinaryNode("iq", java.util.Map.of(
+            "to", id.jawa.domain.model.Jid.SERVER_WHATSAPP,
+            "type", "set",
+            "xmlns", "status",
+            "id", iqId
+        ), java.util.List.of(statusNode));
+        return sendIqAsync(iq).thenApply(resp -> {
+            if ("error".equals(resp.attr("type"))) {
+                throw new IllegalStateException("Failed to set status message: " + resp);
+            }
+            return null;
+        });
+    }
+
+    /**
+     * Fetch the list of JIDs currently blocked by the account.
+     */
+    public java.util.concurrent.CompletableFuture<java.util.List<String>> getBlocklist() {
+        String iqId = newIqId();
+        BinaryNode iq = new BinaryNode("iq", java.util.Map.of(
+            "to", id.jawa.domain.model.Jid.SERVER_WHATSAPP,
+            "type", "get",
+            "xmlns", "blocklist",
+            "id", iqId
+        ), null);
+        return sendIqAsync(iq).thenApply(resp -> {
+            if ("error".equals(resp.attr("type"))) {
+                throw new IllegalStateException("Failed to get blocklist: " + resp);
+            }
+            BinaryNode blocklist = resp.child("blocklist");
+            java.util.List<String> jids = new java.util.ArrayList<>();
+            if (blocklist != null) {
+                for (BinaryNode item : blocklist.children("item")) {
+                    String jid = item.attr("jid");
+                    if (jid != null) jids.add(jid);
+                }
+            }
+            return jids;
+        });
+    }
+
+    /**
+     * Block or unblock a contact.
+     */
+    public java.util.concurrent.CompletableFuture<Void> updateBlocklist(String contactJid, boolean block) {
+        String iqId = newIqId();
+        BinaryNode item = new BinaryNode(block ? "block" : "unblock", java.util.Map.of("jid", contactJid), null);
+        BinaryNode blocklist = new BinaryNode("blocklist", java.util.Map.of(), java.util.List.of(item));
+        BinaryNode iq = new BinaryNode("iq", java.util.Map.of(
+            "to", id.jawa.domain.model.Jid.SERVER_WHATSAPP,
+            "type", "set",
+            "xmlns", "blocklist",
+            "id", iqId
+        ), java.util.List.of(blocklist));
+        return sendIqAsync(iq).thenApply(resp -> {
+            if ("error".equals(resp.attr("type"))) {
+                throw new IllegalStateException("Failed to update blocklist: " + resp);
+            }
+            return null;
+        });
+    }
+
+    /**
+     * Retrieve the public profile picture URL for the given contact.
+     * Returns null if not set or restricted due to privacy settings.
+     */
+    public java.util.concurrent.CompletableFuture<String> getProfilePictureInfo(String contactJid) {
+        String iqId = newIqId();
+        BinaryNode picture = new BinaryNode("picture", java.util.Map.of("type", "image"), null);
+        BinaryNode iq = new BinaryNode("iq", java.util.Map.of(
+            "to", contactJid,
+            "type", "get",
+            "xmlns", "w:profile:picture",
+            "id", iqId
+        ), java.util.List.of(picture));
+        return sendIqAsync(iq).thenApply(resp -> {
+            if ("error".equals(resp.attr("type"))) {
+                return null;
+            }
+            BinaryNode pic = resp.child("picture");
+            return pic != null ? pic.attr("url") : null;
+        });
+    }
+
+    public AuthCreds creds() { return creds; }
+}

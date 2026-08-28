@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-package id.jawa;
+package id.jawa.domain.model;
 
 import id.jawa.protocol.connection.*;
 import id.jawa.protocol.codec.*;
@@ -14,9 +14,13 @@ import id.jawa.feature.signal.*;
 
 
 /**
- * Placeholder root class. Public facade will be defined in id.jawa.client.JaWaClient.
+ * Represents composing states for chat presence indicator.
  */
-public final class JaWa {
-    public static final String VERSION = "0.0.3";
-    private JaWa() {}
+public enum ChatPresence {
+    /** Bot/User is typing text. */
+    COMPOSING,
+    /** Bot/User is recording audio/voice note. */
+    RECORDING,
+    /** Indicator is paused/idle. */
+    PAUSED
 }
