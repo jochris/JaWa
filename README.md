@@ -30,6 +30,18 @@ Add `JaWa` to your project build configuration:
 implementation 'io.github.jochris:JaWa:0.0.3'
 ```
 
+### Standalone Executable Fat JAR
+
+To build a self-contained executable JAR containing all dependencies:
+
+```sh
+# Build the standalone JAR
+mvn clean package -DskipTests
+
+# Run the standalone executable JAR directly
+java -jar target/JaWa-0.0.3-standalone.jar
+```
+
 ---
 
 ## 🏗️ Architecture Layout
