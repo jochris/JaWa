@@ -161,6 +161,10 @@ public final class JaWaClient implements AutoCloseable {
     private final java.util.concurrent.atomic.AtomicInteger reconnectAttempts =
         new java.util.concurrent.atomic.AtomicInteger(0);
     private boolean autoReconnect = true;
+    private boolean autoReadReceipt = false;
+    private boolean autoComposingPresence = false;
+    private boolean autoPreKeyUpload = true;
+
     private static final long[] RECONNECT_BACKOFF_MS = {2_000, 4_000, 8_000, 16_000, 30_000, 60_000};
     /** Counts down exactly once when {@link #close()} fires; lets {@link #join()} block across reconnects. */
     private final java.util.concurrent.CountDownLatch closeLatch = new java.util.concurrent.CountDownLatch(1);
@@ -187,14 +191,40 @@ public final class JaWaClient implements AutoCloseable {
 
     /**
      * Toggle automatic reconnect on unexpected disconnect (default {@code true}).
-     * Disable for short-lived demos / tests where you want the process to exit when
-     * the server closes the socket. Terminal failures (revoked creds, account
-     * banned) never auto-reconnect regardless of this flag.
      */
     public JaWaClient autoReconnect(boolean enabled) {
         this.autoReconnect = enabled;
         return this;
     }
+
+    /**
+     * Configures automatic sending of 'read' receipts when inbound messages arrive (default {@code false}).
+     */
+    public JaWaClient autoReadReceipt(boolean enabled) {
+        this.autoReadReceipt = enabled;
+        return this;
+    }
+
+    /**
+     * Configures automatic sending of 'composing' presence before dispatching outgoing messages (default {@code false}).
+     */
+    public JaWaClient autoComposingPresence(boolean enabled) {
+        this.autoComposingPresence = enabled;
+        return this;
+    }
+
+    /**
+     * Configures automatic pre-key uploads when server pre-key count drops below threshold (default {@code true}).
+     */
+    public JaWaClient autoPreKeyUpload(boolean enabled) {
+        this.autoPreKeyUpload = enabled;
+        return this;
+    }
+
+    public boolean autoReconnect() { return autoReconnect; }
+    public boolean autoReadReceipt() { return autoReadReceipt; }
+    public boolean autoComposingPresence() { return autoComposingPresence; }
+    public boolean autoPreKeyUpload() { return autoPreKeyUpload; }
 
     /** Open the WebSocket, run the handshake, and start dispatching stanzas. Blocks until handshake completes. */
     public synchronized void connect() throws Exception {

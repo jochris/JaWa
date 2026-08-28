@@ -136,7 +136,11 @@ public class PhonePairingExample {
 
     public static void main(String[] args) throws Exception {
         FileAuthStore store = new FileAuthStore(Path.of("sessions/phone.session"));
-        JaWaClient client = new JaWaClient(store, Path.of("sessions/phone.signal")).autoReconnect(true);
+        JaWaClient client = new JaWaClient(store, Path.of("sessions/phone.signal"))
+                .autoReconnect(true)
+                .autoReadReceipt(true)
+                .autoComposingPresence(false)
+                .autoPreKeyUpload(true);
 
         client.listener(new JaWaClient.Listener() {
             @Override
