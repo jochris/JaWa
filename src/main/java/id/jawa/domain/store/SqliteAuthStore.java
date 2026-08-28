@@ -15,11 +15,13 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * SQLite database persistence implementation for {@link AuthCreds} matching {@link AuthStore}.
+ * Pure SQLite database persistence implementation for WhatsApp credentials, Signal sessions,
+ * pre-keys, sender-keys, and app-state keys in a single SQLite database file.
  */
 public final class SqliteAuthStore implements AuthStore, AutoCloseable {
 
@@ -53,10 +55,37 @@ public final class SqliteAuthStore implements AuthStore, AutoCloseable {
                     value TEXT
                 );
             """);
+            stmt.executeUpdate("""
+                CREATE TABLE IF NOT EXISTS sessions (
+                    address TEXT PRIMARY KEY,
+                    record BLOB
+                );
+            """);
+            stmt.executeUpdate("""
+                CREATE TABLE IF NOT EXISTS prekeys (
+                    id INTEGER PRIMARY KEY,
+                    priv_key BLOB,
+                    pub_key BLOB
+                );
+            """);
+            stmt.executeUpdate("""
+                CREATE TABLE IF NOT EXISTS sender_keys (
+                    name TEXT PRIMARY KEY,
+                    record BLOB
+                );
+            """);
+            stmt.executeUpdate("""
+                CREATE TABLE IF NOT EXISTS appstate_keys (
+                    id TEXT PRIMARY KEY,
+                    key_data BLOB
+                );
+            """);
         } catch (SQLException e) {
-            throw new IllegalStateException("Failed to initialize SQLite database: " + jdbcUrl, e);
+            throw new IllegalStateException("Failed to initialize SQLite database tables: " + jdbcUrl, e);
         }
     }
+
+    /* AuthCreds Persistence */
 
     @Override
     public synchronized AuthCreds load() throws IOException {
@@ -116,6 +145,177 @@ public final class SqliteAuthStore implements AuthStore, AutoCloseable {
         return c != null && c.account != null && c.meJid != null;
     }
 
+    /* Signal Sessions Persistence */
+
+    public synchronized Map<String, byte[]> loadSessions() throws IOException {
+        Map<String, byte[]> out = new HashMap<>();
+        try (Connection conn = getConnection();
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery("SELECT address, record FROM sessions")) {
+            while (rs.next()) {
+                out.put(rs.getString("address"), rs.getBytes("record"));
+            }
+        } catch (SQLException e) {
+            throw new IOException("Failed to read sessions from SQLite: " + jdbcUrl, e);
+        }
+        return out;
+    }
+
+    public synchronized void saveSession(String address, byte[] record) {
+        try (Connection conn = getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(
+                 "INSERT INTO sessions (address, record) VALUES (?, ?) ON CONFLICT(address) DO UPDATE SET record = excluded.record")) {
+            pstmt.setString(1, address);
+            pstmt.setBytes(2, record);
+            pstmt.executeUpdate();
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to save session for " + address + " to SQLite", e);
+        }
+    }
+
+    public synchronized void deleteSession(String address) {
+        try (Connection conn = getConnection();
+             PreparedStatement pstmt = conn.prepareStatement("DELETE FROM sessions WHERE address = ?")) {
+            pstmt.setString(1, address);
+            pstmt.executeUpdate();
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to delete session for " + address + " from SQLite", e);
+        }
+    }
+
+    /* Pre-Keys Persistence */
+
+    public synchronized Map<Integer, KeyPair25519> loadPreKeys() throws IOException {
+        Map<Integer, KeyPair25519> out = new HashMap<>();
+        try (Connection conn = getConnection();
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery("SELECT id, priv_key, pub_key FROM prekeys")) {
+            while (rs.next()) {
+                int id = rs.getInt("id");
+                byte[] priv = rs.getBytes("priv_key");
+                byte[] pub = rs.getBytes("pub_key");
+                if (priv != null && pub != null && priv.length == 32 && pub.length == 32) {
+                    out.put(id, new KeyPair25519(priv, pub));
+                }
+            }
+        } catch (SQLException e) {
+            throw new IOException("Failed to read prekeys from SQLite: " + jdbcUrl, e);
+        }
+        return out;
+    }
+
+    public synchronized void savePreKey(int id, KeyPair25519 kp) {
+        try (Connection conn = getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(
+                 "INSERT INTO prekeys (id, priv_key, pub_key) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET priv_key = excluded.priv_key, pub_key = excluded.pub_key")) {
+            pstmt.setInt(1, id);
+            pstmt.setBytes(2, kp.privateKey());
+            pstmt.setBytes(3, kp.publicKey());
+            pstmt.executeUpdate();
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to save prekey " + id + " to SQLite", e);
+        }
+    }
+
+    public synchronized void deletePreKey(int id) {
+        try (Connection conn = getConnection();
+             PreparedStatement pstmt = conn.prepareStatement("DELETE FROM prekeys WHERE id = ?")) {
+            pstmt.setInt(1, id);
+            pstmt.executeUpdate();
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to delete prekey " + id + " from SQLite", e);
+        }
+    }
+
+    public synchronized void prunePreKeys(int keepCount) {
+        try (Connection conn = getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(
+                 "DELETE FROM prekeys WHERE id NOT IN (SELECT id FROM prekeys ORDER BY id DESC LIMIT ?)")) {
+            pstmt.setInt(1, keepCount);
+            pstmt.executeUpdate();
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to prune prekeys in SQLite", e);
+        }
+    }
+
+    /* Sender-Keys Persistence */
+
+    public synchronized Map<String, byte[]> loadSenderKeys() throws IOException {
+        Map<String, byte[]> out = new HashMap<>();
+        try (Connection conn = getConnection();
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery("SELECT name, record FROM sender_keys")) {
+            while (rs.next()) {
+                out.put(rs.getString("name"), rs.getBytes("record"));
+            }
+        } catch (SQLException e) {
+            throw new IOException("Failed to read sender keys from SQLite: " + jdbcUrl, e);
+        }
+        return out;
+    }
+
+    public synchronized void saveSenderKey(String name, byte[] record) {
+        try (Connection conn = getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(
+                 "INSERT INTO sender_keys (name, record) VALUES (?, ?) ON CONFLICT(name) DO UPDATE SET record = excluded.record")) {
+            pstmt.setString(1, name);
+            pstmt.setBytes(2, record);
+            pstmt.executeUpdate();
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to save sender key " + name + " to SQLite", e);
+        }
+    }
+
+    public synchronized void deleteSenderKey(String name) {
+        try (Connection conn = getConnection();
+             PreparedStatement pstmt = conn.prepareStatement("DELETE FROM sender_keys WHERE name = ?")) {
+            pstmt.setString(1, name);
+            pstmt.executeUpdate();
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to delete sender key " + name + " from SQLite", e);
+        }
+    }
+
+    /* App-State Keys Persistence */
+
+    public synchronized Map<String, byte[]> loadAppStateKeys() throws IOException {
+        Map<String, byte[]> out = new HashMap<>();
+        try (Connection conn = getConnection();
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery("SELECT id, key_data FROM appstate_keys")) {
+            while (rs.next()) {
+                out.put(rs.getString("id"), rs.getBytes("key_data"));
+            }
+        } catch (SQLException e) {
+            throw new IOException("Failed to read app-state keys from SQLite: " + jdbcUrl, e);
+        }
+        return out;
+    }
+
+    public synchronized void saveAppStateKey(String id, byte[] keyData) {
+        try (Connection conn = getConnection();
+             PreparedStatement pstmt = conn.prepareStatement(
+                 "INSERT INTO appstate_keys (id, key_data) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET key_data = excluded.key_data")) {
+            pstmt.setString(1, id);
+            pstmt.setBytes(2, keyData);
+            pstmt.executeUpdate();
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to save app-state key " + id + " to SQLite", e);
+        }
+    }
+
+    public synchronized void deleteAppStateKey(String id) {
+        try (Connection conn = getConnection();
+             PreparedStatement pstmt = conn.prepareStatement("DELETE FROM appstate_keys WHERE id = ?")) {
+            pstmt.setString(1, id);
+            pstmt.executeUpdate();
+        } catch (SQLException e) {
+            throw new IllegalStateException("Failed to delete app-state key " + id + " from SQLite", e);
+        }
+    }
+
+    /* Helper Methods */
+
     private Map<String, String> readKv() throws IOException {
         Map<String, String> kv = new LinkedHashMap<>();
         try (Connection conn = getConnection();
@@ -159,6 +359,6 @@ public final class SqliteAuthStore implements AuthStore, AutoCloseable {
 
     @Override
     public void close() {
-        /* SQLite JDBC connections in DriverManager close per operation */
+        /* Connections in DriverManager open and close per operation */
     }
 }

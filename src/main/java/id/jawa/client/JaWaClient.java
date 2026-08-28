@@ -255,7 +255,15 @@ public final class JaWaClient implements AutoCloseable {
         frame.send(clientFinish.toByteArray());
 
         transport = noise.finish();
-        if (signalDir != null && sessionStorage == null) {
+        if (store instanceof id.jawa.domain.store.SqliteAuthStore sqliteStore && sessionStorage == null) {
+            sessionStorage     = new id.jawa.domain.store.FileSessionStorage(sqliteStore);
+            preKeyStorage      = new id.jawa.domain.store.FilePreKeyStorage(sqliteStore);
+            senderKeyStorage   = new id.jawa.domain.store.FileSenderKeyStorage(sqliteStore);
+            appStateKeyStorage = new id.jawa.feature.appstate.FileAppStateKeyStorage(sqliteStore);
+            signalStore        = new InMemorySignalKeyStore(preKeyStorage);
+            senderKeyStore     = new id.jawa.domain.store.InMemorySenderKeyStore(senderKeyStorage);
+            appStateProcessor  = new id.jawa.feature.appstate.AppStateProcessor(appStateKeyStorage);
+        } else if (signalDir != null && sessionStorage == null) {
             sessionStorage     = new id.jawa.domain.store.FileSessionStorage(signalDir.resolve("sessions"));
             preKeyStorage      = new id.jawa.domain.store.FilePreKeyStorage(signalDir.resolve("prekeys"));
             senderKeyStorage   = new id.jawa.domain.store.FileSenderKeyStorage(signalDir.resolve("sender-keys"));

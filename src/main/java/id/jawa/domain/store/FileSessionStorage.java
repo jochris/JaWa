@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 package id.jawa.domain.store;
 
 import id.jawa.protocol.connection.*;
@@ -11,7 +11,6 @@ import id.jawa.feature.messaging.*;
 import id.jawa.feature.media.*;
 import id.jawa.feature.appstate.*;
 import id.jawa.feature.signal.*;
-
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,43 +32,64 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 /**
- * Persistent backing for libsignal {@link SessionRecord}s. One file per peer device
- * under {@code <baseDir>/}, filename is {@code base64(address.name)__<deviceId>.session}.
- *
- * <p>Used by {@link JaWaProtocolStore} when constructed with a non-{@code null} session
- * directory. Without persistence, every restart loses Signal sessions and any peer
- * that messages us gets a {@code NoSessionException} → retry-receipt round-trip.
- *
- * <p>Write strategy: synchronous write-through. Each {@link #put} blocks until the
- * file is flushed. Signal sessions mutate at most a few times per delivered/sent
- * message, so the cost is negligible compared to network round-trips.
+ * Persistent backing for libsignal {@link SessionRecord}s. Supports both file-backed
+ * storage under baseDir and pure SQLite database storage via {@link SqliteAuthStore}.
  */
 public final class FileSessionStorage {
 
     private static final Logger LOG = LoggerFactory.getLogger(FileSessionStorage.class);
 
     private final Path baseDir;
+    private final SqliteAuthStore sqliteStore;
     private final ConcurrentMap<SignalProtocolAddress, byte[]> cache = new ConcurrentHashMap<>();
 
     public FileSessionStorage(Path baseDir) {
+        this(baseDir, null);
+    }
+
+    public FileSessionStorage(SqliteAuthStore sqliteStore) {
+        this(null, sqliteStore);
+    }
+
+    public FileSessionStorage(Path baseDir, SqliteAuthStore sqliteStore) {
         this.baseDir = baseDir;
-        try {
-            Files.createDirectories(baseDir);
-        } catch (IOException e) {
-            throw new UncheckedIOException("cannot create session dir " + baseDir, e);
+        this.sqliteStore = sqliteStore;
+        if (baseDir != null) {
+            try {
+                Files.createDirectories(baseDir);
+            } catch (IOException e) {
+                throw new UncheckedIOException("cannot create session dir " + baseDir, e);
+            }
         }
         loadAll();
     }
 
     private void loadAll() {
-        if (!Files.isDirectory(baseDir)) return;
-        try (Stream<Path> files = Files.list(baseDir)) {
-            files.filter(p -> p.getFileName().toString().endsWith(".session"))
-                .forEach(this::loadOne);
-        } catch (IOException e) {
-            LOG.warn("Failed listing session dir {}: {}", baseDir, e.toString());
+        if (sqliteStore != null) {
+            try {
+                Map<String, byte[]> dbSessions = sqliteStore.loadSessions();
+                for (var entry : dbSessions.entrySet()) {
+                    SignalProtocolAddress addr = decodeFilename(entry.getKey());
+                    if (addr != null && entry.getValue() != null) {
+                        cache.put(addr, entry.getValue());
+                    }
+                }
+                LOG.info("Loaded {} session record(s) from SQLite database", cache.size());
+            } catch (IOException e) {
+                LOG.warn("Failed loading session records from SQLite: {}", e.toString());
+            }
+            return;
         }
-        LOG.info("Loaded {} session record(s) from {}", cache.size(), baseDir);
+
+        if (baseDir != null && Files.isDirectory(baseDir)) {
+            try (Stream<Path> files = Files.list(baseDir)) {
+                files.filter(p -> p.getFileName().toString().endsWith(".session"))
+                    .forEach(this::loadOne);
+            } catch (IOException e) {
+                LOG.warn("Failed listing session dir {}: {}", baseDir, e.toString());
+            }
+            LOG.info("Loaded {} session record(s) from {}", cache.size(), baseDir);
+        }
     }
 
     private void loadOne(Path file) {
@@ -102,23 +122,37 @@ public final class FileSessionStorage {
     public void put(SignalProtocolAddress address, SessionRecord record) {
         byte[] bytes = record.serialize();
         cache.put(address, bytes);
-        try {
-            Path tmp = baseDir.resolve(encodeFilename(address) + ".tmp");
-            Path dest = baseDir.resolve(encodeFilename(address));
-            Files.write(tmp, bytes);
-            Files.move(tmp, dest, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
-                java.nio.file.StandardCopyOption.ATOMIC_MOVE);
-        } catch (IOException e) {
-            LOG.warn("Failed persisting session for {}: {}", address, e.toString());
+        String key = encodeFilename(address);
+        if (sqliteStore != null) {
+            sqliteStore.saveSession(key, bytes);
+            return;
+        }
+        if (baseDir != null) {
+            try {
+                Path tmp = baseDir.resolve(key + ".tmp");
+                Path dest = baseDir.resolve(key);
+                Files.write(tmp, bytes);
+                Files.move(tmp, dest, java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+            } catch (IOException e) {
+                LOG.warn("Failed persisting session for {}: {}", address, e.toString());
+            }
         }
     }
 
     public void delete(SignalProtocolAddress address) {
         cache.remove(address);
-        try {
-            Files.deleteIfExists(baseDir.resolve(encodeFilename(address)));
-        } catch (IOException e) {
-            LOG.warn("Failed deleting session file for {}: {}", address, e.toString());
+        String key = encodeFilename(address);
+        if (sqliteStore != null) {
+            sqliteStore.deleteSession(key);
+            return;
+        }
+        if (baseDir != null) {
+            try {
+                Files.deleteIfExists(baseDir.resolve(key));
+            } catch (IOException e) {
+                LOG.warn("Failed deleting session file for {}: {}", address, e.toString());
+            }
         }
     }
 
@@ -139,7 +173,6 @@ public final class FileSessionStorage {
 
     public int size() { return cache.size(); }
 
-    /** Encode {@code <name>__<deviceId>.session} with base64url'd name so any characters are safe. */
     private static String encodeFilename(SignalProtocolAddress address) {
         String safeName = Base64.getUrlEncoder().withoutPadding()
             .encodeToString(address.getName().getBytes(StandardCharsets.UTF_8));
