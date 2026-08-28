@@ -5,14 +5,14 @@
 [![java](https://img.shields.io/badge/java-compatible-orange)](https://openjdk.org/)
 [![Maven Central](https://img.shields.io/maven-central/v/io.github.jochris/JaWa)](https://central.sonatype.com/artifact/io.github.jochris/JaWa)
 
-> Pure **Java** library for the WhatsApp Web Multi-Device protocol.
-> Features end-to-end Signal encryption, full binary node encoding/decoding, phone & QR pairing, interactive CTA buttons, carousels, lists, and group management.
+> Pure **Java** Client Library & SDK Bridge for the WhatsApp Web Multi-Device protocol.
+> Designed purely as a lightweight, pluggable bridge connecting backend services, microservices, and applications to WhatsApp Web features (Signal E2EE encryption, binary node codecs, QR & Phone pairing, CTA buttons, carousels, lists, and group management).
 
 ---
 
 ## 📦 Installation
 
-Add `JaWa` to your project build configuration:
+Import `JaWa` as a dependency into your Java project:
 
 ### Maven
 
@@ -28,18 +28,6 @@ Add `JaWa` to your project build configuration:
 
 ```groovy
 implementation 'io.github.jochris:JaWa:0.0.3'
-```
-
-### Standalone Executable Fat JAR
-
-To build a self-contained executable JAR containing all dependencies:
-
-```sh
-# Build the standalone JAR
-mvn clean package -DskipTests
-
-# Run the standalone executable JAR directly
-java -jar target/JaWa-0.0.3-standalone.jar
 ```
 
 ---
