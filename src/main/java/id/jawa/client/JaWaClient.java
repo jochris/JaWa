@@ -752,6 +752,84 @@ public final class JaWaClient implements AutoCloseable {
     }
 
     /**
+     * Send a WhatsApp Status / Story text with background ARGB color and font type.
+     *
+     * @param text           status text string
+     * @param backgroundArgb ARGB color integer (e.g. 0xFF005C4B or 0xFF5F0F40)
+     * @param fontType       font type ID (1=SERIF, 2=NORICAN, 3=BRYORDAN, 4=BEBASNEUE)
+     */
+    public java.util.concurrent.CompletableFuture<String> sendStatusText(
+            String text, int backgroundArgb, int fontType) {
+        id.jawa.proto.Wa.Message msg = MessageEncoder.statusTextMessage(text, backgroundArgb, fontType);
+        return sendDmMessage("status@broadcast", msg);
+    }
+
+    /**
+     * Send a WhatsApp Status / Story media message (image or video proto).
+     */
+    public java.util.concurrent.CompletableFuture<String> sendStatusMedia(id.jawa.proto.Wa.Message mediaMsg) {
+        return sendDmMessage("status@broadcast", mediaMsg);
+    }
+
+    /**
+     * Send a text message to a WhatsApp Newsletter / Channel (e.g. "120363xxx@newsletter").
+     */
+    public java.util.concurrent.CompletableFuture<String> sendNewsletterText(
+            String newsletterJid, String text) {
+        String msgId = newIqId();
+        byte[] msgBytes = MessageEncoder.encode(MessageEncoder.text(text));
+        BinaryNode node = new BinaryNode("message",
+            java.util.Map.of(
+                "to", newsletterJid,
+                "type", "text",
+                "id", msgId
+            ),
+            java.util.List.of(new BinaryNode("plaintext", java.util.Map.of(), msgBytes)));
+        send(node);
+        return java.util.concurrent.CompletableFuture.completedFuture(msgId);
+    }
+
+    /**
+     * Send an emoji reaction to a message in a WhatsApp Newsletter / Channel.
+     * Pass {@code reactionCode = null} or empty to remove an existing reaction.
+     */
+    public java.util.concurrent.CompletableFuture<String> sendNewsletterReaction(
+            String newsletterJid, String serverId, String reactionCode) {
+        String msgId = newIqId();
+        java.util.Map<String, String> attrs = new java.util.HashMap<>();
+        attrs.put("to", newsletterJid);
+        attrs.put("type", "reaction");
+        attrs.put("server_id", serverId);
+        attrs.put("id", msgId);
+        if (reactionCode == null || reactionCode.isBlank()) {
+            attrs.put("edit", "7");
+        }
+        BinaryNode reactNode = new BinaryNode("reaction",
+            reactionCode != null && !reactionCode.isBlank() ? java.util.Map.of("code", reactionCode) : java.util.Map.of(),
+            null);
+        BinaryNode msgNode = new BinaryNode("message", attrs, java.util.List.of(reactNode));
+        send(msgNode);
+        return java.util.concurrent.CompletableFuture.completedFuture(msgId);
+    }
+
+    /**
+     * Fetch recent messages from a WhatsApp Newsletter / Channel.
+     */
+    public java.util.concurrent.CompletableFuture<BinaryNode> fetchNewsletterMessages(
+            String newsletterJid, int count) {
+        String iqId = newIqId();
+        BinaryNode node = new BinaryNode("iq",
+            java.util.Map.of(
+                "id", iqId,
+                "type", "get",
+                "xmlns", "newsletter",
+                "to", newsletterJid
+            ),
+            java.util.List.of(new BinaryNode("message_updates", java.util.Map.of("count", String.valueOf(count)), null)));
+        return sendIqAsync(node);
+    }
+
+    /**
      * Send any {@link id.jawa.proto.Wa.Message} (text, reaction, etc.) as a DM. Handles
      * USync device-list query, pre-key bundle fetch, Signal session install, per-device
      * encrypt + DSM fan-out to own companion devices.

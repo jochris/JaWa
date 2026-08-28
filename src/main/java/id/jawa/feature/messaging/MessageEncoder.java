@@ -59,8 +59,20 @@ public final class MessageEncoder {
     }
 
     /** Build a plain text {@code Wa.Message} with the given conversation string. */
-    public static Wa.Message text(String body) {
-        return Wa.Message.newBuilder().setConversation(body).build();
+    public static Wa.Message text(String text) {
+        return Wa.Message.newBuilder().setConversation(text).build();
+    }
+
+    /** Build a Status / Story text message with custom background ARGB color and font type. */
+    public static Wa.Message statusTextMessage(String text, int backgroundArgb, int fontType) {
+        var ext = Wa.Message.ExtendedTextMessage.newBuilder()
+            .setText(text)
+            .setBackgroundArgb(backgroundArgb);
+        var font = Wa.Message.ExtendedTextMessage.FontType.forNumber(fontType);
+        if (font != null) {
+            ext.setFont(font);
+        }
+        return Wa.Message.newBuilder().setExtendedTextMessage(ext).build();
     }
 
     /**
