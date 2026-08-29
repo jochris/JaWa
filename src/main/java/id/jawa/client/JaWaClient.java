@@ -862,6 +862,56 @@ public final class JaWaClient implements AutoCloseable {
     }
 
     /**
+     * Update a group's profile picture using raw JPEG/PNG image bytes.
+     */
+    public java.util.concurrent.CompletableFuture<BinaryNode> updateGroupPicture(
+            String groupJid, byte[] imageBytes) {
+        if (imageBytes == null || imageBytes.length == 0) {
+            return removeGroupPicture(groupJid);
+        }
+        String iqId = newIqId();
+        BinaryNode picNode = new BinaryNode("picture",
+            java.util.Map.of("type", "image"),
+            imageBytes);
+        BinaryNode iq = new BinaryNode("iq",
+            java.util.Map.of("to", groupJid, "type", "set", "xmlns", "w:profile:picture", "id", iqId),
+            java.util.List.of(picNode));
+        return sendIqAsync(iq);
+    }
+
+    /**
+     * Remove a group's profile picture.
+     */
+    public java.util.concurrent.CompletableFuture<BinaryNode> removeGroupPicture(String groupJid) {
+        String iqId = newIqId();
+        BinaryNode picNode = new BinaryNode("picture",
+            java.util.Map.of("type", "delete"),
+            null);
+        BinaryNode iq = new BinaryNode("iq",
+            java.util.Map.of("to", groupJid, "type", "set", "xmlns", "w:profile:picture", "id", iqId),
+            java.util.List.of(picNode));
+        return sendIqAsync(iq);
+    }
+
+    /**
+     * Update account's own profile picture using raw JPEG/PNG image bytes.
+     */
+    public java.util.concurrent.CompletableFuture<BinaryNode> updateProfilePicture(byte[] imageBytes) {
+        id.jawa.domain.model.Jid myJid = id.jawa.domain.model.Jid.parse(creds.meJid);
+        String ownBareJid = myJid != null ? myJid.user() + "@s.whatsapp.net" : creds.meJid;
+        return updateGroupPicture(ownBareJid, imageBytes);
+    }
+
+    /**
+     * Remove account's own profile picture.
+     */
+    public java.util.concurrent.CompletableFuture<BinaryNode> removeProfilePicture() {
+        id.jawa.domain.model.Jid myJid = id.jawa.domain.model.Jid.parse(creds.meJid);
+        String ownBareJid = myJid != null ? myJid.user() + "@s.whatsapp.net" : creds.meJid;
+        return removeGroupPicture(ownBareJid);
+    }
+
+    /**
      * Block or unblock a contact.
      */
     public java.util.concurrent.CompletableFuture<BinaryNode> updateBlockStatus(String targetJid, boolean block) {
