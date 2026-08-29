@@ -379,6 +379,89 @@ public class SqliteSessionExample {
 
 ---
 
+### 7. Automatic Media Downloader Helper
+
+Automatically download and decrypt attachments (Image, Video, Audio PTT, Document, Sticker) from an inbound message:
+
+```java
+package com.example;
+
+import id.jawa.client.JaWaClient;
+import id.jawa.feature.messaging.MessageReceiver;
+
+public class MediaDownloadExample {
+
+    public static void onIncomingMessage(JaWaClient client, MessageReceiver.Decoded decoded) {
+        if (decoded.message() == null) return;
+
+        /* Auto-download and decrypt file bytes */
+        byte[] mediaBytes = client.downloadMedia(decoded.message());
+        if (mediaBytes != null) {
+            System.out.println("Downloaded decrypted file: " + mediaBytes.length + " bytes");
+        }
+    }
+}
+```
+
+---
+
+### 8. Profile, Privacy & Blocklist API
+
+Manage account bio status, fetch profile picture URLs, and manage contact blocklists:
+
+```java
+package com.example;
+
+import id.jawa.client.JaWaClient;
+
+import java.util.List;
+
+public class ProfilePrivacyExample {
+
+    public static void manageProfile(JaWaClient client, String targetJid) throws Exception {
+        /* Update profile bio/status */
+        client.updateProfileStatus("Built with JaWa Library 🚀");
+
+        /* Fetch profile picture URL (preview) */
+        String avatarUrl = client.fetchProfilePictureUrl(targetJid).get();
+        System.out.println("Avatar URL: " + avatarUrl);
+
+        /* Block contact & fetch current blocklist */
+        client.updateBlockStatus(targetJid, true /* block */);
+        List<String> blockedJids = client.fetchBlockList().get();
+        System.out.println("Blocked Contacts: " + blockedJids);
+    }
+}
+```
+
+---
+
+### 9. Chat Management (Pin, Archive, Mute)
+
+Manage chat pin, archive, and mute states:
+
+```java
+package com.example;
+
+import id.jawa.client.JaWaClient;
+
+public class ChatManagementExample {
+
+    public static void manageChat(JaWaClient client, String chatJid) {
+        /* Pin chat */
+        client.pinChat(chatJid, true /* pin */);
+
+        /* Archive chat */
+        client.archiveChat(chatJid, true /* archive */);
+
+        /* Mute chat for 8 hours (28800 seconds) */
+        client.muteChat(chatJid, 8 * 3600);
+    }
+}
+```
+
+---
+
 ## 📄 License
 
 This project is licensed under the terms of the **GNU General Public License v3.0** (GPL-3.0-or-later). See [LICENSE](LICENSE) for details.
