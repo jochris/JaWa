@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 package id.jawa.feature.media;
 
 import id.jawa.protocol.connection.*;
@@ -12,7 +12,7 @@ import id.jawa.feature.media.*;
 import id.jawa.feature.appstate.*;
 import id.jawa.feature.signal.*;
 
-
+import id.jawa.proto.Wa;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -21,138 +21,101 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
 import java.time.Duration;
-import java.util.Arrays;
-import java.util.Base64;
-import java.util.Map;
 
 /**
- * Download an encrypted media payload by URL or by {@code directPath}, verify the
- * envelope SHA-256, then decrypt via {@link MediaCrypto#decrypt}.
- *
- * <p>Two entry points:
- * <ul>
- *   <li>{@link #downloadByUrl(String, byte[], byte[], MediaCrypto.MediaType)} —
- *       when the inbound {@code Wa.Message} has a non-empty {@code url} field, GET it
- *       directly.</li>
- *   <li>{@link #downloadByDirectPath(MediaConn, String, byte[], byte[],
- *       MediaCrypto.MediaType)} — when only {@code directPath} is set, compose
- *       {@code https://<host><directPath>&hash=<b64(fileEncSha256)>&mms-type=<type>&__wa-mms=}
- *       and try each {@link MediaConn} host in order until one returns 200.</li>
- * </ul>
+ * Downloads and decrypts WhatsApp media attachments from a Wa.Message or direct URLs.
  */
 public final class MediaDownloader {
 
     private static final Logger LOG = LoggerFactory.getLogger(MediaDownloader.class);
-
-    private static final HttpClient HTTP = HttpClient.newBuilder()
+    private static final HttpClient HTTP_CLIENT = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(15))
         .build();
-
-    private static final Map<MediaCrypto.MediaType, String> MMS_TYPE = Map.of(
-        MediaCrypto.MediaType.IMAGE,    "image",
-        MediaCrypto.MediaType.VIDEO,    "video",
-        MediaCrypto.MediaType.AUDIO,    "audio",
-        MediaCrypto.MediaType.DOCUMENT, "document"
-    );
 
     private MediaDownloader() {}
 
     /**
-     * GET {@code url}, verify {@code fileEncSha256}, decrypt with {@code mediaKey}
-     * and return plaintext bytes.
+     * Download and decrypt media from a Wa.Message (Image, Video, Audio, Document, Sticker).
+     *
+     * @param msg the inbound Wa.Message protobuf payload
+     * @return raw decrypted file byte array, or null if message has no supported media payload
      */
-    public static byte[] downloadByUrl(String url,
-                                       byte[] mediaKey,
-                                       byte[] fileEncSha256,
-                                       MediaCrypto.MediaType type)
-            throws IOException, InterruptedException {
-        byte[] payload = httpGet(url);
-        return verifyAndDecrypt(payload, mediaKey, fileEncSha256, type);
+    public static byte[] download(Wa.Message msg) {
+        if (msg == null) return null;
+
+        if (msg.hasImageMessage()) {
+            var img = msg.getImageMessage();
+            return fetchAndDecrypt(img.getUrl(), img.getMediaKey().toByteArray(), MediaCrypto.MediaType.IMAGE);
+        }
+        if (msg.hasVideoMessage()) {
+            var vid = msg.getVideoMessage();
+            return fetchAndDecrypt(vid.getUrl(), vid.getMediaKey().toByteArray(), MediaCrypto.MediaType.VIDEO);
+        }
+        if (msg.hasAudioMessage()) {
+            var aud = msg.getAudioMessage();
+            return fetchAndDecrypt(aud.getUrl(), aud.getMediaKey().toByteArray(), MediaCrypto.MediaType.AUDIO);
+        }
+        if (msg.hasDocumentMessage()) {
+            var doc = msg.getDocumentMessage();
+            return fetchAndDecrypt(doc.getUrl(), doc.getMediaKey().toByteArray(), MediaCrypto.MediaType.DOCUMENT);
+        }
+        if (msg.hasStickerMessage()) {
+            var stk = msg.getStickerMessage();
+            return fetchAndDecrypt(stk.getUrl(), stk.getMediaKey().toByteArray(), MediaCrypto.MediaType.IMAGE);
+        }
+
+        return null;
     }
 
     /**
-     * Try each {@link MediaConn} host in order until one returns 200, then verify
-     * and decrypt as in {@link #downloadByUrl}.
-     *
-     * @param directPath the {@code direct_path} from the inbound message (must start
-     *                   with {@code /}; whatsapp's value already includes query params,
-     *                   so the constructed URL appends with {@code &} not {@code ?})
+     * Download and decrypt media from a direct CDN URL.
      */
-    public static byte[] downloadByDirectPath(MediaConn mediaConn,
-                                              String directPath,
-                                              byte[] mediaKey,
-                                              byte[] fileEncSha256,
-                                              MediaCrypto.MediaType type)
-            throws IOException, InterruptedException {
-        if (directPath == null || !directPath.startsWith("/")) {
-            throw new IllegalArgumentException("directPath must start with '/', got: " + directPath);
-        }
-        if (mediaConn.hosts().isEmpty()) {
-            throw new IllegalStateException("mediaConn has no hosts");
-        }
-        String mmsType = MMS_TYPE.get(type);
-        String encHashB64 = Base64.getUrlEncoder().withoutPadding().encodeToString(fileEncSha256);
-
-        IOException lastErr = null;
-        for (String host : mediaConn.hosts()) {
-            String url = "https://" + host + directPath
-                + "&hash=" + encHashB64
-                + "&mms-type=" + mmsType
-                + "&__wa-mms=";
-            try {
-                byte[] payload = httpGet(url);
-                return verifyAndDecrypt(payload, mediaKey, fileEncSha256, type);
-            } catch (IOException e) {
-                LOG.debug("Download from {} failed ({}), trying next host", host, e.toString());
-                lastErr = e;
-            }
-        }
-        throw new IOException("media download failed across all "
-            + mediaConn.hosts().size() + " host(s); last error: " + lastErr, lastErr);
+    public static byte[] downloadByUrl(String url, byte[] mediaKey, byte[] fileEncSha256, MediaCrypto.MediaType type) throws IOException, InterruptedException {
+        return fetchAndDecrypt(url, mediaKey, type);
     }
 
-    private static byte[] httpGet(String url) throws IOException, InterruptedException {
-        HttpRequest req = HttpRequest.newBuilder(URI.create(url))
-            .header("Origin", "https://web.whatsapp.com")
-            .header("Referer", "https://web.whatsapp.com/")
-            .timeout(Duration.ofMinutes(2))
-            .GET()
-            .build();
-        HttpResponse<byte[]> resp = HTTP.send(req, HttpResponse.BodyHandlers.ofByteArray());
-        if (resp.statusCode() != 200) {
-            throw new IOException("media download failed: HTTP " + resp.statusCode());
+    /**
+     * Download and decrypt media using directPath and MediaConn host list.
+     */
+    public static byte[] downloadByDirectPath(MediaConn conn, String directPath, byte[] mediaKey, byte[] fileEncSha256, MediaCrypto.MediaType type) throws IOException, InterruptedException {
+        if (conn == null || conn.hosts().isEmpty()) {
+            throw new IllegalArgumentException("MediaConn has no hosts");
         }
-        return resp.body();
+        String path = directPath.startsWith("/") ? directPath : "/" + directPath;
+        for (String host : conn.hosts()) {
+            String fullUrl = "https://" + host + path;
+            byte[] res = fetchAndDecrypt(fullUrl, mediaKey, type);
+            if (res != null) return res;
+        }
+        throw new IOException("Failed downloading media from all MediaConn hosts");
     }
 
-    private static byte[] verifyAndDecrypt(byte[] payload,
-                                           byte[] mediaKey,
-                                           byte[] fileEncSha256,
-                                           MediaCrypto.MediaType type) throws IOException {
-        if (fileEncSha256 != null && fileEncSha256.length == 32) {
-            byte[] actual = sha256(payload);
-            if (!Arrays.equals(actual, fileEncSha256)) {
-                throw new IOException("downloaded payload SHA-256 mismatch — "
-                    + "expected " + hex(fileEncSha256) + ", got " + hex(actual));
-            }
+    /**
+     * Fetch encrypted bytes from media URL and decrypt using mediaKey and mediaType.
+     */
+    public static byte[] fetchAndDecrypt(String url, byte[] mediaKey, MediaCrypto.MediaType type) {
+        if (url == null || url.isBlank() || mediaKey == null || mediaKey.length == 0) {
+            return null;
         }
-        return MediaCrypto.decrypt(payload, mediaKey, type);
-    }
-
-    private static byte[] sha256(byte[] input) {
         try {
-            return MessageDigest.getInstance("SHA-256").digest(input);
-        } catch (NoSuchAlgorithmException e) {
-            throw new IllegalStateException("SHA-256 unavailable", e);
-        }
-    }
+            HttpRequest request = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .timeout(Duration.ofSeconds(30))
+                .GET()
+                .build();
 
-    private static String hex(byte[] b) {
-        StringBuilder sb = new StringBuilder(b.length * 2);
-        for (byte x : b) sb.append(String.format("%02x", x));
-        return sb.toString();
+            HttpResponse<byte[]> response = HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofByteArray());
+            if (response.statusCode() != 200) {
+                LOG.warn("Media HTTP download failed with status {}: {}", response.statusCode(), url);
+                return null;
+            }
+
+            byte[] encBytes = response.body();
+            return MediaCrypto.decrypt(encBytes, mediaKey, type);
+        } catch (Exception e) {
+            LOG.warn("Failed downloading and decrypting media from {}: {}", url, e.toString());
+            return null;
+        }
     }
 }

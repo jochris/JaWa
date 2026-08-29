@@ -830,6 +830,115 @@ public final class JaWaClient implements AutoCloseable {
     }
 
     /**
+     * Download and decrypt media bytes (Image, Video, Audio, Document, Sticker) from an inbound Wa.Message.
+     */
+    public byte[] downloadMedia(id.jawa.proto.Wa.Message msg) {
+        return id.jawa.feature.media.MediaDownloader.download(msg);
+    }
+
+    /**
+     * Update account profile bio/status text.
+     */
+    public java.util.concurrent.CompletableFuture<BinaryNode> updateProfileStatus(String statusText) {
+        String iqId = newIqId();
+        BinaryNode iq = new BinaryNode("iq",
+            java.util.Map.of("to", id.jawa.domain.model.Jid.SERVER_WHATSAPP, "type", "set", "xmlns", "status", "id", iqId),
+            java.util.List.of(new BinaryNode("status", java.util.Map.of(), statusText.getBytes(java.nio.charset.StandardCharsets.UTF_8))));
+        return sendIqAsync(iq);
+    }
+
+    /**
+     * Fetch profile picture URL for a user or group JID. Returns null if not available/private.
+     */
+    public java.util.concurrent.CompletableFuture<String> fetchProfilePictureUrl(String targetJid) {
+        String iqId = newIqId();
+        BinaryNode iq = new BinaryNode("iq",
+            java.util.Map.of("to", targetJid, "type", "get", "xmlns", "w:profile:picture", "id", iqId),
+            java.util.List.of(new BinaryNode("picture", java.util.Map.of("type", "preview"), null)));
+        return sendIqAsync(iq).thenApply(resp -> {
+            var picNode = resp.child("picture");
+            return picNode != null ? picNode.attr("url") : null;
+        });
+    }
+
+    /**
+     * Block or unblock a contact.
+     */
+    public java.util.concurrent.CompletableFuture<BinaryNode> updateBlockStatus(String targetJid, boolean block) {
+        String iqId = newIqId();
+        BinaryNode item = new BinaryNode("item", java.util.Map.of("action", block ? "block" : "unblock", "jid", targetJid), null);
+        BinaryNode iq = new BinaryNode("iq",
+            java.util.Map.of("to", id.jawa.domain.model.Jid.SERVER_WHATSAPP, "type", "set", "xmlns", "blocklist", "id", iqId),
+            java.util.List.of(item));
+        return sendIqAsync(iq);
+    }
+
+    /**
+     * Fetch current blocklist JIDs.
+     */
+    public java.util.concurrent.CompletableFuture<java.util.List<String>> fetchBlockList() {
+        String iqId = newIqId();
+        BinaryNode iq = new BinaryNode("iq",
+            java.util.Map.of("to", id.jawa.domain.model.Jid.SERVER_WHATSAPP, "type", "get", "xmlns", "blocklist", "id", iqId),
+            null);
+        return sendIqAsync(iq).thenApply(resp -> {
+            var listNode = resp.child("list");
+            if (listNode == null) return java.util.List.of();
+            java.util.List<String> jids = new java.util.ArrayList<>();
+            for (var item : listNode.childrenList()) {
+                if ("item".equals(item.tag()) && item.attr("jid") != null) {
+                    jids.add(item.attr("jid"));
+                }
+            }
+            return jids;
+        });
+    }
+
+    /**
+     * Pin or unpin a chat.
+     */
+    public java.util.concurrent.CompletableFuture<BinaryNode> pinChat(String chatJid, boolean pin) {
+        String iqId = newIqId();
+        BinaryNode item = new BinaryNode("pin", java.util.Map.of("jid", chatJid, "action", pin ? "pin" : "unpin"), null);
+        BinaryNode iq = new BinaryNode("iq",
+            java.util.Map.of("to", id.jawa.domain.model.Jid.SERVER_WHATSAPP, "type", "set", "xmlns", "action", "id", iqId),
+            java.util.List.of(item));
+        return sendIqAsync(iq);
+    }
+
+    /**
+     * Archive or unarchive a chat.
+     */
+    public java.util.concurrent.CompletableFuture<BinaryNode> archiveChat(String chatJid, boolean archive) {
+        String iqId = newIqId();
+        BinaryNode item = new BinaryNode("archive", java.util.Map.of("jid", chatJid, "action", archive ? "archive" : "unarchive"), null);
+        BinaryNode iq = new BinaryNode("iq",
+            java.util.Map.of("to", id.jawa.domain.model.Jid.SERVER_WHATSAPP, "type", "set", "xmlns", "action", "id", iqId),
+            java.util.List.of(item));
+        return sendIqAsync(iq);
+    }
+
+    /**
+     * Mute or unmute a chat for the given duration in seconds (0 = unmute).
+     */
+    public java.util.concurrent.CompletableFuture<BinaryNode> muteChat(String chatJid, long durationSeconds) {
+        String iqId = newIqId();
+        java.util.Map<String, String> attrs = new java.util.HashMap<>();
+        attrs.put("jid", chatJid);
+        if (durationSeconds > 0) {
+            attrs.put("type", "set");
+            attrs.put("time", String.valueOf(durationSeconds));
+        } else {
+            attrs.put("type", "delete");
+        }
+        BinaryNode item = new BinaryNode("mute", attrs, null);
+        BinaryNode iq = new BinaryNode("iq",
+            java.util.Map.of("to", id.jawa.domain.model.Jid.SERVER_WHATSAPP, "type", "set", "xmlns", "action", "id", iqId),
+            java.util.List.of(item));
+        return sendIqAsync(iq);
+    }
+
+    /**
      * Send any {@link id.jawa.proto.Wa.Message} (text, reaction, etc.) as a DM. Handles
      * USync device-list query, pre-key bundle fetch, Signal session install, per-device
      * encrypt + DSM fan-out to own companion devices.
